@@ -1,0 +1,39 @@
+{
+  "name": "@obsidianasecmx/obsidiana-server",
+  "version": "1.0.0",
+  "description": "Node.js server with end‑to‑end encryption for HTTP and WebSocket using the Obsidiana protocol (ECDH + AES‑GCM‑256 + PoW). Automatic handshake, session management, and transparent request/response encryption.",
+  "main": "index.js",
+  "files": [
+    "index.js",
+    "README.md",
+    "LICENSE",
+    "src/",
+    "test/"
+  ],
+  "license": "GPL-3.0",
+  "keywords": [
+    "server",
+    "websocket",
+    "encryption",
+    "e2e",
+    "security",
+    "obsidiana",
+    "zero-dependency"
+  ],
+  "author": "Kevin Huerta <kevinhuerta2808@gmail.com>",
+  "homepage": "https://github.com/obsidianasecmx/obsidiana-server",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/obsidianasecmx/obsidiana-server.git"
+  },
+  "bugs": {
+    "url": "https://github.com/obsidianasecmx/obsidiana-server/issues"
+  },
+  "dependencies": {
+    "@obsidianasecmx/obsidiana-protocol": ">=1.0.0",
+    "@obsidianasecmx/obsidiana-client": ">=1.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
