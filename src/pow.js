@@ -1,98 +1,63 @@
 "use strict";
 
 /**
- * Obsidiana Proof of Work — Dynamic difficulty DoS protection.
+ * Proof‑of‑Work manager with dynamic difficulty.
  *
- * Implements a client-side Proof of Work (PoW) challenge system to prevent
- * handshake flooding attacks. Difficulty adjusts dynamically based on request
- * rate: higher load = harder challenges.
+ * Implements a client‑side SHA‑256 PoW challenge to prevent handshake flooding.
+ * Difficulty adjusts based on request rate: higher load → harder challenges.
  *
- * The PoW algorithm uses SHA-256: client must find a nonce such that
- * SHA-256(hash + nonce) starts with `difficulty` leading zero bits.
- *
- * The handshake flow:
- * 1. Server sends PoW challenge + ECDSA signature (server identity verification)
- * 2. Client verifies server signature, solves PoW, sends offer with client signature
- * 3. Server verifies PoW and client signature, completes ECDH handshake
+ * Challenge lifecycle:
+ * 1. Server generates random hash + difficulty, stores challenge.
+ * 2. Client finds nonce such that SHA‑256(hash + nonce) has `difficulty` leading zero bits.
+ * 3. Server verifies solution and marks challenge as used.
  *
  * @module pow
  * @private
  */
 
-/** Default PoW configuration. @private */
+/** @private */
 const POW_DEFAULTS = {
-  min: 2, // Minimum difficulty (leading zero bits)
-  max: 8, // Maximum difficulty under load
-  window: 10, // Time window in seconds to measure request rate
-  challengeTTL: 30, // Seconds before a challenge expires
+  min: 2,
+  max: 8,
+  window: 10,
+  challengeTTL: 30,
 };
 
 /**
- * Proof of Work manager with dynamic difficulty.
- *
- * Generates challenges, tracks request rate for difficulty adjustment,
- * and verifies client solutions before allowing handshake completion.
- *
- * Challenge lifecycle:
- * 1. Server generates challenge with random hash and difficulty
- * 2. Server signs challenge with identity key (client verifies)
- * 3. Client solves by finding nonce that produces leading zeros
- * 4. Client signs offer with its own key (mutual authentication)
- * 5. Server verifies solution and client signature, marks challenge as used
+ * PoW manager.
  *
  * @example
  * const pow = new ObsidianaPOW();
- *
- * // Generate challenge for client
  * const challenge = pow.generateChallenge();
- * // { id: "a1b2c3...", hash: "def456...", difficulty: 4, ttl: 30 }
- *
- * // Client sends solution (challengeId + nonce + signatures)
- * const isValid = await pow.verify(challengeId, nonce);
+ * // client solves ...
+ * const ok = await pow.verify(challenge.id, nonce);
  */
 class ObsidianaPOW {
   /**
-   * Creates a new PoW manager.
-   *
-   * @param {object} [options] - Configuration options
+   * @param {object} [options] - Configuration
    * @param {number} [options.min=2] - Minimum difficulty (leading zero bits)
    * @param {number} [options.max=8] - Maximum difficulty under load
-   * @param {number} [options.window=10] - Time window (seconds) to measure request rate
+   * @param {number} [options.window=10] - Window (seconds) to measure request rate
    * @param {number} [options.challengeTTL=30] - Seconds before a challenge expires
    */
   constructor(options = {}) {
     this._cfg = { ...POW_DEFAULTS, ...options };
 
-    /**
-     * Active challenges.
-     * @private
-     * @type {Map<string, { hash: string, difficulty: number, createdAt: number, used: boolean, attempts: number }>}
-     */
+    /** @private {Map<string, object>} */
     this._challenges = new Map();
 
-    /**
-     * Timestamps of recent challenge requests for rate calculation.
-     * @private
-     * @type {number[]}
-     */
+    /** @private {number[]} */
     this._requests = [];
 
-    // Cleanup expired challenges every 30 seconds
-    this._cleanup = setInterval(() => this._gc(), 30_000);
-    this._cleanup.unref();
+    setInterval(() => this._gc(), 30_000).unref();
   }
 
   /**
-   * Generates a new challenge for the client to solve.
-   *
-   * Difficulty is adjusted dynamically based on recent request rate.
-   * Higher request rate → higher difficulty → more client CPU work.
+   * Generates a new challenge.
    *
    * @returns {{ id: string, hash: string, difficulty: number, ttl: number }}
-   *          Challenge object to send to client
    */
   generateChallenge() {
-    // Track request for rate calculation
     this._requests.push(Date.now());
     this._pruneRequests();
 
@@ -117,30 +82,23 @@ class ObsidianaPOW {
   }
 
   /**
-   * Verifies a client's PoW solution.
+   * Verifies a client’s PoW solution.
    *
-   * Checks:
-   * - Challenge exists and hasn't expired
-   * - Challenge hasn't been used before
-   * - SHA-256(hash + nonce) has required leading zero bits
-   *
-   * @param {string} challengeId - ID of the challenge to verify
-   * @param {string} nonce - Client-provided nonce that satisfies the difficulty
-   * @returns {Promise<boolean>} True if solution is valid and challenge was unused
+   * @param {string} challengeId - ID of the challenge
+   * @param {string} nonce - Nonce found by the client
+   * @returns {Promise<boolean>} True if valid and unused
    */
   async verify(challengeId, nonce) {
     const entry = this._challenges.get(challengeId);
     if (!entry) return false;
     if (entry.used) return false;
 
-    // TTL check
     const age = (Date.now() - entry.createdAt) / 1000;
     if (age > this._cfg.challengeTTL) {
       this._challenges.delete(challengeId);
       return false;
     }
 
-    // Verify PoW: SHA-256(hash + nonce) must start with `difficulty` zero bits
     const input = entry.hash + nonce;
     const digest = await _sha256Hex(input);
     const valid = _checkLeadingZeros(digest, entry.difficulty);
@@ -149,19 +107,15 @@ class ObsidianaPOW {
       entry.used = true;
       return true;
     } else {
-      // Invalid solution — delete challenge to prevent brute force
       this._challenges.delete(challengeId);
       return false;
     }
   }
 
   /**
-   * Calculates current difficulty based on recent request rate.
+   * Computes current difficulty based on request rate.
    *
-   * Higher request rate = higher difficulty (linear interpolation between
-   * min and max). Rate is capped at 20 requests per window for max difficulty.
-   *
-   * @returns {number} Difficulty (leading zero bits)
+   * @returns {number}
    * @private
    */
   _currentDifficulty() {
@@ -172,7 +126,7 @@ class ObsidianaPOW {
   }
 
   /**
-   * Removes request timestamps older than the configured window.
+   * Removes requests older than the window.
    * @private
    */
   _pruneRequests() {
@@ -181,15 +135,13 @@ class ObsidianaPOW {
   }
 
   /**
-   * Garbage collector — removes expired challenges.
-   * Runs every 30 seconds automatically.
+   * Garbage collector for expired challenges.
    * @private
    */
   _gc() {
     const now = Date.now();
     for (const [id, entry] of this._challenges) {
       const age = (now - entry.createdAt) / 1000;
-      // Keep challenges for 5 seconds beyond TTL for grace period
       if (age > this._cfg.challengeTTL + 5) {
         this._challenges.delete(id);
       }
@@ -199,8 +151,9 @@ class ObsidianaPOW {
 
 /**
  * Generates a random hex string.
+ *
  * @param {number} bytes - Number of random bytes
- * @returns {string} Hex string of length `bytes * 2`
+ * @returns {string}
  * @private
  */
 function _randomHex(bytes) {
@@ -209,9 +162,10 @@ function _randomHex(bytes) {
 }
 
 /**
- * Computes SHA-256 hash of a string and returns it as hex.
- * @param {string} input - Input string
- * @returns {Promise<string>} Hex digest (64 chars)
+ * Computes SHA‑256 of a string and returns hex.
+ *
+ * @param {string} input
+ * @returns {Promise<string>}
  * @private
  */
 async function _sha256Hex(input) {
@@ -225,21 +179,19 @@ async function _sha256Hex(input) {
 /**
  * Checks if a hex digest has at least `difficulty` leading zero bits.
  *
- * @param {string} hex - Hex digest (64 chars)
+ * @param {string} hex - 64‑character hex digest
  * @param {number} difficulty - Required leading zero bits
- * @returns {boolean} True if condition satisfied
+ * @returns {boolean}
  * @private
  */
 function _checkLeadingZeros(hex, difficulty) {
   const fullChars = Math.floor(difficulty / 4);
   const remainder = difficulty % 4;
 
-  // Check full zero characters
   for (let i = 0; i < fullChars; i++) {
     if (hex[i] !== "0") return false;
   }
 
-  // Check partial character (remaining bits)
   if (remainder > 0) {
     const val = parseInt(hex[fullChars], 16);
     const mask = 0xf >> remainder;
@@ -250,19 +202,12 @@ function _checkLeadingZeros(hex, difficulty) {
 }
 
 /**
- * Packs a challenge into a compact base64 string for transmission.
+ * Packs a challenge into a compact base64 blob.
  *
- * Wire format:
- * ┌──────────────┬──────────────┬──────────────┬──────────────┐
- * │ id (32 bytes)│ difficulty(1)│ ttl (2 bytes)│ hash (64 bytes)│
- * └──────────────┴──────────────┴──────────────┴──────────────┘
+ * Wire format: id (32 bytes) + difficulty (1) + ttl (2) + hash (64 bytes)
  *
  * @param {object} challenge - Challenge object
- * @param {string} challenge.id - 32-byte hex ID
- * @param {string} challenge.hash - 64-byte hex hash
- * @param {number} challenge.difficulty - Difficulty value (1 byte)
- * @param {number} challenge.ttl - Time-to-live in seconds (2 bytes)
- * @returns {string} Base64-encoded challenge blob
+ * @returns {string} Base64‑encoded blob
  */
 function packChallenge(challenge) {
   const idBytes = new TextEncoder().encode(challenge.id);
@@ -288,7 +233,7 @@ function packChallenge(challenge) {
 /**
  * Unpacks a base64 challenge blob.
  *
- * @param {string} b64 - Base64-encoded challenge blob
+ * @param {string} b64 - Base64 challenge
  * @returns {{ id: string, hash: string, difficulty: number, ttl: number }}
  * @throws {Error} If unpacking fails
  */
@@ -314,17 +259,10 @@ function unpackChallenge(b64) {
 }
 
 /**
- * Unpacks a client offer blob.
+ * Unpacks a client offer blob (PoW solution + ECDH keys).
  *
- * @param {string} b64 - Base64-encoded offer blob
- * @returns {{
- *   publicKey: string,
- *   signerPublicKey: string,
- *   challengeId: string,
- *   nonce: string,
- *   clientSig: string,
- *   serverKeyHash: string
- * } | null} Decoded offer or null on error
+ * @param {string} b64 - Base64 offer
+ * @returns {object|null} Decoded offer or null on error
  */
 function unpackOffer(b64) {
   try {
@@ -332,7 +270,6 @@ function unpackOffer(b64) {
     const buf = Uint8Array.from(bin, (c) => c.charCodeAt(0));
     let offset = 0;
 
-    // ecdhPublicKey
     const ecdhLen = (buf[offset] << 8) | buf[offset + 1];
     offset += 2;
     const publicKey = new TextDecoder().decode(
@@ -340,7 +277,6 @@ function unpackOffer(b64) {
     );
     offset += ecdhLen;
 
-    // signerPublicKey
     const signerLen = (buf[offset] << 8) | buf[offset + 1];
     offset += 2;
     const signerPublicKey = new TextDecoder().decode(
@@ -348,7 +284,6 @@ function unpackOffer(b64) {
     );
     offset += signerLen;
 
-    // challengeId
     const cidLen = (buf[offset] << 8) | buf[offset + 1];
     offset += 2;
     const challengeId = new TextDecoder().decode(
@@ -356,13 +291,11 @@ function unpackOffer(b64) {
     );
     offset += cidLen;
 
-    // nonce
     const nLen = (buf[offset] << 8) | buf[offset + 1];
     offset += 2;
     const nonce = new TextDecoder().decode(buf.slice(offset, offset + nLen));
     offset += nLen;
 
-    // clientSig
     const sigLen = (buf[offset] << 8) | buf[offset + 1];
     offset += 2;
     const clientSig = new TextDecoder().decode(
@@ -370,7 +303,6 @@ function unpackOffer(b64) {
     );
     offset += sigLen;
 
-    // serverKeyHash
     const skhLen = (buf[offset] << 8) | buf[offset + 1];
     offset += 2;
     const serverKeyHash = new TextDecoder().decode(
@@ -392,11 +324,11 @@ function unpackOffer(b64) {
 }
 
 /**
- * Retrieves the original challenge blob for signature verification.
+ * Retrieves the original challenge blob for a given challenge ID.
  *
  * @param {ObsidianaPOW} pow - PoW instance
  * @param {string} challengeId - Challenge ID
- * @returns {Promise<string|null>} Base64 challenge blob or null if not found
+ * @returns {Promise<string|null>} Base64 challenge blob or null
  */
 async function getChallengeBlob(pow, challengeId) {
   const entry = pow._challenges.get(challengeId);

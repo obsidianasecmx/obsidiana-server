@@ -1,25 +1,25 @@
 "use strict";
 
 /**
- * Obsidiana Auth Middleware — Unified authentication middleware.
+ * Unified authentication middleware for Obsidiana.
  *
- * Resolves authentication from three sources:
- * 1. "auth" cookie (web browsers)
- * 2. Bearer token (API clients)
- * 3. Token in request body (mobile apps)
+ * Resolves user identity from three sources:
+ * - "auth" cookie (web browsers)
+ * - Bearer token (API clients)
+ * - Token field in request body (mobile apps)
  *
- * Automatically decrypts the token/cookie and attaches the user data to
- * `req.user`. Also sets `req.isAuthenticated` flag.
+ * Decrypts the credential using the identity key and attaches the user data
+ * to `req.user`. Also sets `req.isAuthenticated` and `req.authMethod`.
  *
  * @module auth
  * @private
  */
 
 /**
- * Creates the unified authentication middleware.
+ * Factory that creates the unified authentication middleware.
  *
- * @param {ObsidianaCookieManager} cookieManager - Cookie manager for auth cookie
- * @param {ObsidianaTokenManager} tokenManager - Token manager for Bearer/body tokens
+ * @param {ObsidianaCookieManager} cookieManager - Manager for encrypted cookies
+ * @param {ObsidianaTokenManager} tokenManager - Manager for stateless tokens
  * @returns {Function} Express-style middleware (req, res, next) => Promise<void>
  */
 function createAuthMiddleware(cookieManager, tokenManager) {
@@ -27,7 +27,7 @@ function createAuthMiddleware(cookieManager, tokenManager) {
     let userData = null;
     let authMethod = null;
 
-    // Strategy 1: "auth" cookie (web browsers)
+    // 1) Try to read and decrypt the "auth" cookie
     if (cookieManager && !userData) {
       const cookieAuth = await cookieManager.get(req, "auth");
       if (cookieAuth?.userId) {
@@ -36,7 +36,7 @@ function createAuthMiddleware(cookieManager, tokenManager) {
       }
     }
 
-    // Strategy 2: Bearer token (API clients)
+    // 2) Try Bearer token from Authorization header
     if (!userData && req.headers.authorization) {
       const match = req.headers.authorization.match(/^Bearer\s+(.+)$/i);
       if (match) {
@@ -48,7 +48,7 @@ function createAuthMiddleware(cookieManager, tokenManager) {
       }
     }
 
-    // Strategy 3: Token in request body (mobile apps)
+    // 3) Try token from request body (mobile apps)
     if (!userData && req.body?.token) {
       const tokenData = await tokenManager.verify(req.body.token);
       if (tokenData?.userId) {
@@ -57,7 +57,6 @@ function createAuthMiddleware(cookieManager, tokenManager) {
       }
     }
 
-    // Attach to request object
     req.user = userData;
     req.authMethod = authMethod;
     req.isAuthenticated = !!userData;
@@ -67,9 +66,9 @@ function createAuthMiddleware(cookieManager, tokenManager) {
 }
 
 /**
- * Middleware wrapper that requires authentication.
+ * Wraps a route handler to require authentication.
  *
- * Returns 401 if the request is not authenticated.
+ * Responds with 401 if the request is not authenticated.
  *
  * @param {Function} handler - Route handler (req, res) => Promise<void>
  * @returns {Function} Wrapped handler that checks authentication first
@@ -84,9 +83,10 @@ function requireAuth(handler) {
 }
 
 /**
- * Middleware wrapper for optional authentication.
+ * Wraps a route handler for optional authentication.
  *
- * Does not block unauthenticated requests; simply attaches `req.user` if available.
+ * Does not block unauthenticated requests; simply attaches `req.user`
+ * if authentication data is present.
  *
  * @param {Function} handler - Route handler (req, res) => Promise<void>
  * @returns {Function} Wrapped handler
@@ -95,12 +95,6 @@ function optionalAuth(handler) {
   return async (req, res) => handler(req, res);
 }
 
-/**
- * @exports
- * @property {Function} createAuthMiddleware - Creates auth middleware
- * @property {Function} requireAuth - Wraps handler to require authentication
- * @property {Function} optionalAuth - Wraps handler for optional authentication
- */
 module.exports = {
   createAuthMiddleware,
   requireAuth,

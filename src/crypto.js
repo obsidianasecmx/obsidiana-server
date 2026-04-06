@@ -1,20 +1,13 @@
 "use strict";
 
 /**
- * Obsidiana Crypto Middleware — Automatic encryption/decryption for HTTP routes.
+ * Crypto middleware for automatic HTTP request/response encryption.
  *
- * This middleware intercepts HTTP requests and responses, automatically
- * decrypting incoming requests and encrypting outgoing responses using the
- * session established during handshake.
+ * Intercepts requests and responses, decrypts incoming bodies using the
+ * session established during handshake, and encrypts outgoing responses.
  *
- * The middleware:
- * - Bypasses public routes (no encryption)
- * - Resolves session from AAD static hint
- * - Verifies nonce for replay protection
- * - Decrypts request body using AES-GCM-256
- * - Wraps response methods to encrypt all outgoing data
- *
- * Supports both standard AES-GCM and ratchet encryption for forward secrecy.
+ * Supports both standard AES‑GCM and ratchet encryption (forward secrecy).
+ * Bypasses public routes and the handshake endpoint.
  *
  * @module crypto-middleware
  * @private
@@ -23,10 +16,10 @@
 const { ObsidianaCBOR } = require("@obsidianasecmx/obsidiana-protocol");
 
 /**
- * Creates the crypto middleware for automatic encryption/decryption.
+ * Factory for the crypto middleware.
  *
- * @param {ObsidianaSessionStore} store - Session store for lookup and nonce tracking
- * @param {string[]} bypassPaths - Paths that skip crypto (e.g., handshake endpoint)
+ * @param {ObsidianaSessionStore} store - Session store for lookups and nonce tracking
+ * @param {string[]} bypassPaths - Paths that skip encryption (e.g., handshake endpoint)
  * @param {Router} router - Router to check route publicity
  * @returns {Function} Express-style middleware (req, res, next) => Promise<void>
  */
@@ -37,7 +30,7 @@ function obsidianaCrypto(store, bypassPaths, router) {
     if (!routeExists) return next();
 
     if (routeExists.public) {
-      // Parse plaintext body for public routes
+      // For public routes, parse plaintext body
       if (["POST", "PUT", "PATCH", "DELETE"].includes(req.method)) {
         const raw = await req.rawBody();
         if (raw.length) {
@@ -53,15 +46,14 @@ function obsidianaCrypto(store, bypassPaths, router) {
       return next();
     }
 
-    // Bypass paths (handshake endpoint, root)
+    // Bypass handshake endpoint and root
     if (bypassPaths.includes(req.pathname) || req.pathname === "/")
       return next();
 
-    // Only handle relevant HTTP methods
     if (!["POST", "PUT", "PATCH", "DELETE", "GET"].includes(req.method))
       return next();
 
-    // Body size limit check (512 KB)
+    // Enforce 512 KB body limit
     const contentLength = parseInt(req.headers["content-length"] ?? "0", 10);
     if (contentLength > 512 * 1024) {
       res.send(413);
@@ -69,7 +61,6 @@ function obsidianaCrypto(store, bypassPaths, router) {
     }
 
     try {
-      // Extract encrypted payload (from body or query param for GET)
       let raw;
       if (req.method === "GET" && req.query?.get("_d")) {
         const b64 = req.query.get("_d");
@@ -93,7 +84,6 @@ function obsidianaCrypto(store, bypassPaths, router) {
         return;
       }
 
-      // Resolve session from envelope
       const { aad, sessionId, cipher, ratchet } = await _resolveFromEnvelope(
         envelope,
         store,
@@ -104,10 +94,8 @@ function obsidianaCrypto(store, bypassPaths, router) {
         return;
       }
 
-      // Check if ratchet encryption is being used
       const isRatchet = !!(envelope.ct && envelope.hdr);
 
-      // Decrypt the request body
       let plain;
       try {
         if (isRatchet && ratchet) {
@@ -119,19 +107,18 @@ function obsidianaCrypto(store, bypassPaths, router) {
         } else {
           plain = await cipher.decrypt(envelope, { sessionId });
         }
-      } catch (e) {
+      } catch {
         res.send(401);
         return;
       }
 
-      // Anti-replay: verify nonce hasn't been used before
+      // Replay protection: nonce must be unused
       if (!store.claimNonce(aad.n)) {
         console.log("[crypto] nonce replay");
         res.send(401);
         return;
       }
 
-      // Attach decrypted body and wrap response for encryption
       req.body = plain;
       req._useRatchet = isRatchet;
       _wrapResponse(res, cipher, sessionId, ratchet, req._useRatchet);
@@ -148,10 +135,11 @@ function obsidianaCrypto(store, bypassPaths, router) {
 }
 
 /**
- * Resolves session from an encrypted envelope.
+ * Resolves a session from an encrypted envelope.
  *
- * Extracts the AAD from the envelope, uses the static hint to look up
- * the session in the store, and returns the session data.
+ * Extracts the AAD (additional authenticated data) from the envelope,
+ * uses the static hint to look up the session, and returns the cipher
+ * and optional ratchet.
  *
  * @param {object} envelope - Encrypted envelope { d, ct?, hdr? }
  * @param {ObsidianaSessionStore} store - Session store
@@ -160,13 +148,11 @@ function obsidianaCrypto(store, bypassPaths, router) {
  */
 async function _resolveFromEnvelope(envelope, store) {
   try {
-    // Decode base64 blob and extract AAD
     const blob = Uint8Array.from(atob(envelope.d), (c) => c.charCodeAt(0));
     const aadLen = (blob[12] << 8) | blob[13];
     const aadBytes = blob.slice(14, 14 + aadLen);
     const aad = JSON.parse(new TextDecoder().decode(aadBytes));
 
-    // Look up session by static hint
     const result = await store.resolveSession(aad);
     if (!result) return { cipher: null };
 
@@ -185,14 +171,14 @@ async function _resolveFromEnvelope(envelope, store) {
 /**
  * Wraps response methods to automatically encrypt outgoing data.
  *
- * Replaces `res.json()`, `res.text()`, `res.html()`, and `res.send()`
- * with encrypted versions. The original `_originalSend` is preserved
- * for raw responses.
+ * Replaces `res.json()`, `res.text()`, `res.html()` and `res.send()`
+ * with encrypted versions. The original `res.send` is preserved as
+ * `_originalSend` for raw responses.
  *
  * @param {object} res - HTTP response object
  * @param {ObsidianaAES} cipher - AES cipher for encryption
  * @param {string} sessionId - Current session identifier
- * @param {object|null} ratchet - Ratchet instance for forward secrecy (optional)
+ * @param {object|null} ratchet - Ratchet instance (optional)
  * @param {boolean} useRatchet - Whether to use ratchet encryption
  * @private
  */
@@ -222,7 +208,6 @@ function _wrapResponse(
         let wireData;
 
         if (useRatchet && ratchet) {
-          // Ratchet mode: use forward secrecy ratchet
           const { ciphertext, header } = await ratchet.encrypt(body);
           const aadEnvelope = await cipher.encrypt({}, { sessionId });
           wireData = ObsidianaCBOR.encode({
@@ -231,7 +216,6 @@ function _wrapResponse(
             hdr: btoa(String.fromCharCode(...header)),
           });
         } else {
-          // Standard mode: use AES-GCM
           const envelope = await cipher.encrypt(body, { sessionId });
           wireData = ObsidianaCBOR.encode(envelope);
         }
@@ -247,7 +231,6 @@ function _wrapResponse(
     return p;
   }
 
-  // Replace response methods with encrypted versions
   res.json = (status, data) => encryptAndSend(status, data);
   res.text = (status, text) => encryptAndSend(status, text);
   res.html = (status, html) => encryptAndSend(status, html);

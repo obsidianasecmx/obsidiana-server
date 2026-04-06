@@ -1,11 +1,12 @@
 "use strict";
 
 /**
- * Obsidiana Server — Core HTTP/WebSocket server class.
+ * Core HTTP/WebSocket server class.
  *
- * This class handles all server functionality: HTTP routing, middleware,
- * WebSocket upgrades, session management, Proof-of-Work challenges,
- * and transparent encryption via obsidiana-protocol.
+ * Handles routing, middleware, WebSocket upgrades, session management,
+ * Proof‑of‑Work challenges, and transparent encryption.
+ *
+ * Routes are encrypted by default unless registered under `app.public`.
  *
  * @module obsidiana-server/src/server
  * @private
@@ -26,45 +27,20 @@ const { ObsidianaIdentity } = require("./identity");
 const { registerProtocol, HTTP_HANDSHAKE_PATH } = require("./protocol");
 const { securityHeaders, rateLimit } = require("./builtins");
 
-/**
- * Default maximum body size for incoming requests (512 KB).
- * @private
- * @constant {number}
- */
 const DEFAULT_MAX_BODY = 512 * 1024;
+const CLIENT_BUILD_PATH =
+  require.resolve("@obsidianasecmx/obsidiana-client/build.js");
 
 /**
- * Path to obsidiana-client build script — sibling directory.
- * @private
- * @constant {string}
- */
-const CLIENT_BUILD_PATH = require.resolve("@obsidianasecmx/obsidiana-client/build.js");
-
-/**
- * Main Obsidiana server class.
- *
- * Creates an HTTP/WebSocket server with automatic end-to-end encryption.
- * Routes are encrypted by default unless registered under `app.public`.
- *
- * @example
- * const app = new Server();
- * await app._ensureInit(); // internal, called by listen()
- * app.get('/api/data', (req, res) => res.json(200, { ok: true }));
- * await app.listen(3000);
+ * Obsidiana server.
  */
 class Server {
   /**
-   * Creates a new Obsidiana server instance.
-   *
    * @param {object} [options] - Server configuration
-   * @param {number} [options.maxBodySize=524288] - Maximum request body size in bytes
-   * @param {object} [options.pow] - Proof-of-Work configuration (see ObsidianaPOW)
-   * @param {object} [options.auth] - Authentication configuration
-   * @param {object} [options.auth.cookies] - Cookie manager options
-   * @param {object} [options.auth.tokens] - Token manager options
-   * @param {object} [options.rateLimit] - Rate limiting configuration
-   * @param {number} [options.rateLimit.windowMs=60000] - Time window in milliseconds
-   * @param {number} [options.rateLimit.max=100] - Maximum requests per window
+   * @param {number} [options.maxBodySize=524288]
+   * @param {object} [options.pow] - PoW options
+   * @param {object} [options.auth] - Authentication options
+   * @param {object} [options.rateLimit] - Rate limiting options
    */
   constructor(options = {}) {
     /** @private {MiddlewarePipeline} */
@@ -141,10 +117,10 @@ class Server {
   }
 
   /**
-   * Adds middleware to the request pipeline.
+   * Adds middleware to the pipeline.
    *
    * @param {...Function} fns - Middleware functions
-   * @returns {this} Current instance for method chaining
+   * @returns {this}
    */
   use(...fns) {
     this._pipeline.use(...fns);
@@ -152,12 +128,12 @@ class Server {
   }
 
   /**
-   * Registers a route handler for a specific HTTP method.
+   * Registers a route for a specific HTTP method.
    *
-   * @param {string} method - HTTP method (GET, POST, etc.)
-   * @param {string} path - Route path (supports parameters like /users/:id)
-   * @param {Function} handler - Request handler function
-   * @returns {this} Current instance for method chaining
+   * @param {string} method - HTTP method
+   * @param {string} path - Route path
+   * @param {Function} handler - Handler function
+   * @returns {this}
    */
   on(method, path, handler) {
     this._router.on(method, path, handler, false);
@@ -165,11 +141,11 @@ class Server {
   }
 
   /**
-   * Registers a WebSocket route handler.
+   * Registers a WebSocket route.
    *
-   * @param {string} path - WebSocket endpoint path
-   * @param {Function} handler - Handler function receiving (socket, req)
-   * @returns {this} Current instance for method chaining
+   * @param {string} path - WebSocket endpoint
+   * @param {Function} handler - (socket, req) => void
+   * @returns {this}
    */
   ws(path, handler) {
     this._ws.register(path, handler);
@@ -177,17 +153,13 @@ class Server {
   }
 
   /**
-   * Starts the HTTP/WebSocket server.
-   *
-   * Initializes all components (identity, session store, POW,
-   * crypto middleware, protocol routes, WebSocket handlers) before
-   * binding to the specified port.
+   * Starts the server.
    *
    * @param {number} [port=3000] - Listening port
    * @param {object|string} [options] - Options object or host string
    * @param {boolean} [options.ws=false] - Enable WebSocket support
-   * @param {string} [options.host="0.0.0.0"] - Hostname to bind
-   * @returns {Promise<{port: number, host: string, ws: boolean}>} Server info
+   * @param {string} [options.host="0.0.0.0"] - Hostname
+   * @returns {Promise<{port: number, host: string, ws: boolean}>}
    */
   async listen(port = 3000, options = {}) {
     if (typeof options === "string") options = { host: options };
@@ -212,7 +184,7 @@ class Server {
   }
 
   /**
-   * Closes the server gracefully.
+   * Closes the server.
    *
    * @returns {Promise<void>}
    */
@@ -224,25 +196,16 @@ class Server {
   }
 
   /**
-   * Ensures all asynchronous initialization is complete.
-   *
-   * Initialization steps:
-   * 1. Load or generate persistent identity keypair
-   * 2. Initialize cookie and token managers
-   * 3. Register security headers, rate limiting, crypto middleware, and protocol routes
-   * 4. Initialize WebSocket handler
-   * 5. Build obsidiana-client bundles with server identity
+   * Ensures all asynchronous initialisation is done.
    *
    * @private
    * @returns {Promise<void>}
    */
-  _ensureInit() {
+  async _ensureInit() {
     if (!this._initPromise) {
       this._initPromise = (async () => {
-        // 1. Persistent identity keypair — load or generate from disk
         await this._identity.init();
 
-        // 2. Initialize cookie and token managers
         const { ObsidianaCookieManager } = require("./cookies");
         const { ObsidianaTokenManager } = require("./tokens");
         const { createAuthMiddleware } = require("./auth");
@@ -259,29 +222,23 @@ class Server {
         await this._cookieManager.init();
         await this._tokenManager.init();
 
-        // 3. Security headers (must be early in pipeline)
         this._pipeline.use(securityHeaders());
 
-        // 4. Rate limiting
         if (this._rateLimitOptions.enabled !== false) {
           this._pipeline.use(rateLimit(this._rateLimitOptions));
         }
 
-        // 5. Crypto middleware (decrypts request bodies)
         this._pipeline.use(
           obsidianaCrypto(this._store, [HTTP_HANDSHAKE_PATH], this._router),
         );
 
-        // 6. Auth middleware (after crypto so req.body is available)
         this._pipeline.use(
           createAuthMiddleware(this._cookieManager, this._tokenManager),
         );
 
-        // 7. Protocol routes and WebSocket
         registerProtocol(this, this._store, this._pow, this._identity);
         this._ws.init(this._store, this._pow, this._identity);
 
-        // 8. Build obsidiana-client with server identity key hardcoded
         await this._buildClient();
       })();
     }
@@ -289,10 +246,7 @@ class Server {
   }
 
   /**
-   * Builds obsidiana-client bundles with the server's identity public key.
-   *
-   * The generated bundles are placed in the `.obsidiana/` directory.
-   * This only runs if obsidiana-client is present as a sibling package.
+   * Builds the obsidiana‑client bundle with the server’s public key.
    *
    * @private
    */
@@ -309,7 +263,6 @@ class Server {
         "[obsidiana] Building obsidiana-client with server identity...",
       );
 
-      // esbuild resolves entryPoints relative to cwd — must run from client dir
       const clientDir = path.dirname(CLIENT_BUILD_PATH);
       const prevCwd = process.cwd();
       process.chdir(clientDir);
@@ -331,8 +284,8 @@ class Server {
    * Handles an incoming HTTP request.
    *
    * @private
-   * @param {http.IncomingMessage} rawReq - Raw Node.js request
-   * @param {http.ServerResponse} rawRes - Raw Node.js response
+   * @param {http.IncomingMessage} rawReq
+   * @param {http.ServerResponse} rawRes
    */
   async _handle(rawReq, rawRes) {
     const baseUrl = `http://${rawReq.headers.host ?? "localhost"}`;
@@ -343,44 +296,14 @@ class Server {
 
     req._serverRouter = this._router;
 
-    // Add cookie helpers
     if (this._cookieManager) {
-      /**
-       * Gets a decrypted cookie.
-       *
-       * @param {string} name - Cookie name
-       * @returns {Promise<any>} Decrypted value
-       */
       req.getCookie = (name) => this._cookieManager.get(req, name);
-
-      /**
-       * Sets an encrypted cookie.
-       *
-       * @param {string} name - Cookie name
-       * @param {any} value - Value to encrypt
-       * @param {object} [options] - Cookie options
-       * @returns {Promise<void>}
-       */
       res.setCookie = (name, value, options) =>
         this._cookieManager.set(res, name, value, options);
-
-      /**
-       * Removes a cookie.
-       *
-       * @param {string} name - Cookie name
-       */
       res.removeCookie = (name) => this._cookieManager.remove(res, name);
     }
 
-    // Add token helper
     if (this._tokenManager) {
-      /**
-       * Creates an encrypted token.
-       *
-       * @param {object} payload - Data to embed
-       * @param {number} [ttl] - Time to live in seconds
-       * @returns {Promise<string>} Encrypted token
-       */
       res.createToken = (payload, ttl) =>
         this._tokenManager.generate(payload, ttl);
     }
@@ -399,13 +322,7 @@ class Server {
         const pathExists = this._router._routes.some((route) =>
           route.regex.test(req.pathname),
         );
-
-        if (pathExists) {
-          res.send(405);
-        } else {
-          res.send(404);
-        }
-
+        res.send(pathExists ? 405 : 404);
         return;
       }
 
@@ -432,8 +349,4 @@ class Server {
   }
 }
 
-/**
- * @exports
- * @property {Class} Server - Main server class
- */
 module.exports = { Server };

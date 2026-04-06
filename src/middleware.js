@@ -1,57 +1,40 @@
 "use strict";
 
 /**
- * Obsidiana Middleware Pipeline — Sequential middleware execution.
+ * Sequential middleware pipeline.
  *
  * Manages a stack of middleware functions that process requests and responses
  * in order. Each middleware receives `(req, res, next)` and must call `next()`
  * to pass control to the next middleware. Asynchronous middleware can return
- * a Promise or use `async/await`.
+ * a Promise or be declared `async`.
  *
  * @module middleware
  * @private
  */
 
 /**
- * Manages a sequential middleware pipeline.
- *
- * Middleware functions are executed in the order they are registered.
- * Each middleware can:
- * - Modify `req` and `res` objects
- * - End the response early by not calling `next()`
- * - Pass an error to `next(err)` to trigger rejection
+ * Pipeline that executes middleware functions sequentially.
  *
  * @example
  * const pipeline = new MiddlewarePipeline();
- *
  * pipeline.use(async (req, res, next) => {
- *   console.log('Before');
+ *   console.log('before');
  *   await next();
- *   console.log('After');
+ *   console.log('after');
  * });
- *
- * pipeline.use((req, res, next) => {
- *   res.setHeader('X-Custom', 'value');
- *   next();
- * });
- *
  * await pipeline.run(req, res);
  */
 class MiddlewarePipeline {
   constructor() {
-    /**
-     * Internal middleware stack.
-     * @private
-     * @type {Function[]}
-     */
+    /** @private {Function[]} */
     this._stack = [];
   }
 
   /**
-   * Registers one or more middleware functions at the end of the stack.
+   * Appends one or more middleware functions.
    *
    * @param {...Function} fns - Middleware functions (req, res, next) => void
-   * @returns {this} Current pipeline instance for chaining
+   * @returns {this} This pipeline for chaining
    * @throws {TypeError} If any argument is not a function
    */
   use(...fns) {
@@ -65,13 +48,12 @@ class MiddlewarePipeline {
   }
 
   /**
-   * Registers one or more middleware functions at the front of the stack.
+   * Prepends one or more middleware functions.
    *
-   * Multiple functions are prepended in the order they are passed,
-   * so the first argument runs before the second.
+   * The first function will run before the second, etc.
    *
-   * @param {...Function} fns - Middleware functions (req, res, next) => void
-   * @returns {this} Current pipeline instance for chaining
+   * @param {...Function} fns - Middleware functions
+   * @returns {this} This pipeline for chaining
    * @throws {TypeError} If any argument is not a function
    */
   prepend(...fns) {
@@ -80,7 +62,6 @@ class MiddlewarePipeline {
         throw new TypeError(`Middleware must be a function, got ${typeof fn}`);
       }
     }
-    // Reverse so that the first argument ends up at index 0 after unshifting
     for (let i = fns.length - 1; i >= 0; i--) {
       this._stack.unshift(fns[i]);
     }
@@ -88,14 +69,10 @@ class MiddlewarePipeline {
   }
 
   /**
-   * Runs the middleware stack in order against the request and response.
+   * Executes the middleware stack.
    *
-   * The pipeline executes each middleware sequentially. If a middleware
-   * calls `next(err)`, the pipeline rejects with that error. If a middleware
-   * throws or returns a rejected Promise, the pipeline rejects immediately.
-   *
-   * @param {object} req - Request object (will be mutated by middleware)
-   * @param {object} res - Response object (will be mutated by middleware)
+   * @param {object} req - Request object (mutated)
+   * @param {object} res - Response object (mutated)
    * @returns {Promise<void>} Resolves when all middleware have completed
    */
   run(req, res) {
@@ -110,7 +87,6 @@ class MiddlewarePipeline {
         const fn = stack[index++];
         try {
           const result = fn(req, res, next);
-          // If the middleware returns a Promise, forward rejection
           if (result && typeof result.then === "function") {
             result.then(undefined, reject);
           }

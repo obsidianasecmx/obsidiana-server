@@ -1,18 +1,13 @@
 "use strict";
 
 /**
- * Obsidiana Secure Tokens — Encrypted tokens with identity key.
+ * Stateless encrypted token manager using the server's identity key.
  *
- * Provides stateless, encrypted tokens for authentication across all platforms.
- * Tokens are AES-GCM-256 encrypted and ECDSA-signed using the server's identity
- * keypair. Format: v1:encrypted:signature.
+ * Tokens are AES‑GCM‑256 encrypted and ECDSA‑signed.
+ * Format: `v1:encryptedPayload:signature` (base64url).
  *
- * Features:
- * - AES-GCM-256 encryption with identity-derived key
- * - ECDSA signature for integrity
- * - Stateless (all data is in the token)
- * - Optional revocation via in-memory blacklist
- * - Automatic expiration (iat + exp)
+ * Tokens contain a JTI (random ID) and expiration (iat + exp).
+ * Optional revocation is supported via an in‑memory blacklist.
  *
  * @module tokens
  * @private
@@ -21,40 +16,32 @@
 const { ObsidianaECDSA } = require("@obsidianasecmx/obsidiana-protocol");
 
 /**
- * Manager for encrypted stateless tokens.
- *
- * @example
- * const tokens = new ObsidianaTokenManager(identity);
- * await tokens.init();
- * const token = await tokens.generate({ userId: 123, role: 'admin' });
- * const payload = await tokens.verify(token);
+ * Token manager.
  */
 class ObsidianaTokenManager {
   /**
-   * Creates a new token manager instance.
-   *
-   * @param {ObsidianaIdentity} identity - Identity keypair for signatures
-   * @param {object} [options] - Optional configuration
+   * @param {ObsidianaIdentity} identity - Server identity keypair
+   * @param {object} [options]
    * @param {number} [options.defaultTTL=604800] - Default TTL in seconds (7 days)
    */
   constructor(identity, options = {}) {
-    /** @private {ObsidianaIdentity} Identity keypair */
+    /** @private {ObsidianaIdentity} */
     this._identity = identity;
 
-    /** @private {number} Default TTL in seconds */
+    /** @private {number} */
     this._defaultTTL = options.defaultTTL ?? 7 * 24 * 60 * 60;
 
-    /** @private {Set<string>} Revoked token IDs (jti) */
+    /** @private {Set<string>} */
     this._revokedTokens = new Set();
 
-    /** @private {CryptoKey|null} AES key derived from identity key */
+    /** @private {CryptoKey|null} */
     this._encryptionKey = null;
   }
 
   /**
-   * Initializes the manager by deriving the encryption key.
+   * Initialises the manager (derives AES key).
    *
-   * @returns {Promise<this>} Current instance for method chaining
+   * @returns {Promise<this>}
    */
   async init() {
     if (!this._encryptionKey) {
@@ -97,10 +84,10 @@ class ObsidianaTokenManager {
   }
 
   /**
-   * Converts a base64 or base64url string to Uint8Array.
+   * Converts base64url to Uint8Array.
    *
-   * @param {string} base64 - Base64 or base64url encoded string
-   * @returns {Uint8Array} Decoded bytes
+   * @param {string} base64
+   * @returns {Uint8Array}
    * @private
    */
   _base64ToUint8Array(base64) {
@@ -117,10 +104,10 @@ class ObsidianaTokenManager {
   }
 
   /**
-   * Converts a Uint8Array to a base64url string.
+   * Converts Uint8Array to base64url.
    *
-   * @param {Uint8Array} uint8 - Bytes to encode
-   * @returns {string} Base64url-encoded string
+   * @param {Uint8Array} uint8
+   * @returns {string}
    * @private
    */
   _uint8ArrayToBase64(uint8) {
@@ -137,8 +124,8 @@ class ObsidianaTokenManager {
   /**
    * Generates a random hex string.
    *
-   * @param {number} bytes - Number of random bytes
-   * @returns {string} Hex string of length bytes * 2
+   * @param {number} bytes
+   * @returns {string}
    * @private
    */
   _randomHex(bytes) {
@@ -147,11 +134,11 @@ class ObsidianaTokenManager {
   }
 
   /**
-   * Generates an encrypted, signed token.
+   * Generates a new encrypted token.
    *
-   * @param {object} payload - Data to embed in the token (userId, role, etc.)
-   * @param {number} [ttlSeconds] - Time to live in seconds (defaults to defaultTTL)
-   * @returns {Promise<string>} Encrypted token (v1:encrypted:signature)
+   * @param {object} payload - Data to embed (e.g., userId)
+   * @param {number} [ttlSeconds] - TTL in seconds (defaults to defaultTTL)
+   * @returns {Promise<string>} Encrypted token
    */
   async generate(payload, ttlSeconds = this._defaultTTL) {
     const tokenPayload = {
@@ -182,10 +169,10 @@ class ObsidianaTokenManager {
   }
 
   /**
-   * Verifies, decrypts, and returns a token's payload.
+   * Verifies, decrypts and returns a token’s payload.
    *
    * @param {string} token - Encrypted token
-   * @returns {Promise<object|null>} Decrypted payload or null if invalid/expired/revoked
+   * @returns {Promise<object|null>} Decrypted payload or null
    */
   async verify(token) {
     const parts = token.split(":");
@@ -194,7 +181,6 @@ class ObsidianaTokenManager {
     const encryptedPayload = this._base64ToUint8Array(parts[1]);
     const signature = parts[2];
 
-    // Verify signature
     const isValid = await ObsidianaECDSA.verify(
       this._identity.publicKey,
       encryptedPayload,
@@ -217,10 +203,7 @@ class ObsidianaTokenManager {
       const decoded = new TextDecoder().decode(decryptedBytes);
       const payload = JSON.parse(decoded);
 
-      // Check expiration
       if (Date.now() > payload.exp) return null;
-
-      // Check revocation
       if (this._revokedTokens.has(payload.jti)) return null;
 
       return payload;
@@ -230,21 +213,14 @@ class ObsidianaTokenManager {
   }
 
   /**
-   * Revokes a token by its JTI (token ID).
+   * Revokes a token by its JTI.
    *
-   * Revoked tokens are automatically removed after 7 days.
-   *
-   * @param {string} jti - Token ID to revoke
+   * @param {string} jti - Token ID
    */
   revoke(jti) {
     this._revokedTokens.add(jti);
-    // Auto-cleanup after TTL
     setTimeout(() => this._revokedTokens.delete(jti), 7 * 24 * 60 * 60 * 1000);
   }
 }
 
-/**
- * @exports
- * @property {Class} ObsidianaTokenManager - Encrypted token manager
- */
 module.exports = { ObsidianaTokenManager };

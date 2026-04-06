@@ -1,8 +1,8 @@
 # Obsidiana Server
 
-A zero-dependency HTTP/WebSocket framework with **transparent end-to-end encryption** built on top of [obsidiana-protocol](https://github.com/obsidianasecmx/obsidiana-protocol). All routes are encrypted by default — request bodies arrive already decrypted to your handlers, and responses are encrypted before leaving the server.
+A Node.js HTTP/WebSocket framework with **transparent end-to-end encryption** built on the Obsidiana protocol (ECDH + AES-GCM-256 + PoW). All routes are encrypted by default — request bodies arrive already decrypted to your handlers, and responses are encrypted automatically before leaving the server.
 
-**Requires Node.js 18+. No external dependencies.**
+**Requires Node.js ≥ 18. Zero runtime dependencies beyond `obsidiana-protocol` and `obsidiana-client`.**
 
 ---
 
@@ -22,8 +22,8 @@ A zero-dependency HTTP/WebSocket framework with **transparent end-to-end encrypt
   - [Built-in middleware](#built-in-middleware)
   - [Custom middleware](#custom-middleware)
 - [Authentication](#authentication)
-  - [Cookies](#cookies)
-  - [Tokens](#tokens)
+  - [Encrypted cookies](#encrypted-cookies)
+  - [Stateless tokens](#stateless-tokens)
   - [requireAuth / optionalAuth](#requireauth--optionalauth)
 - [Static Files](#static-files)
 - [Proof-of-Work (PoW)](#proof-of-work-pow)
@@ -40,23 +40,23 @@ A zero-dependency HTTP/WebSocket framework with **transparent end-to-end encrypt
 Obsidiana Server wraps every HTTP and WebSocket connection in a full cryptographic handshake before any application data is exchanged:
 
 ```
-Client                                      Server
-──────                                      ──────
-GET /q  ──────────────────────────────────► Issue PoW challenge (signed with server identity)
-        ◄─────────────────────── { challenge, serverSig }
+Client                                          Server
+──────                                          ──────
+GET /q  ──────────────────────────────────────► Generate PoW challenge (signed with server identity)
+        ◄──────────────── CBOR({ d: blob + "." + sig })
 
-Solve PoW, sign challenge, send ECDH key
-POST /q ──── { offer, nonce, clientSig } ──► Verify PoW + signature, complete ECDH
-        ◄──────────────────── { response }   Session stored, AES-GCM-256 key derived
+Solve PoW, sign challenge blob with ECDSA, send ECDH public key
+POST /q ──── CBOR({ d: binary offer }) ───────► Verify PoW solution + ECDSA sig + server key hash
+        ◄──── CBOR(ECDH response)               Session stored, AES-GCM-256 key derived
 
 All subsequent HTTP requests:
-POST /api/data  ──── CBOR({ d: encrypted }) ──► Decrypt → req.body = { ... }
-                ◄─── CBOR({ d: encrypted }) ──  res.json(200, data) → encrypted
+POST /api/data ──── CBOR({ d: encrypted }) ───► Decrypt → req.body = { ... }
+               ◄─── CBOR({ d: encrypted }) ────  res.json(200, data) → encrypted automatically
 
-WebSocket same flow with PoW + ECDH before first message.
+WebSocket: same PoW + ECDH flow on upgrade, then all messages are encrypted.
 ```
 
-The handshake endpoint is `/q`. Everything else is an application route.
+The handshake endpoint is `/q`. Everything else is your application.
 
 ---
 
@@ -66,14 +66,49 @@ The handshake endpoint is `/q`. Everything else is an application route.
 npm install @obsidianasecmx/obsidiana-server
 ```
 
-> `obsidiana-protocol` is a peer dependency — install it alongside this package.
-
-On first `listen()`, the server generates a persistent ECDSA P-256 identity keypair and saves it to `.obsidiana/` in your working directory. This directory should be **kept out of version control** (add it to `.gitignore`).
+On first `listen()`, the server generates a persistent ECDSA P-256 identity keypair and saves it under `.obsidiana/` in your working directory. Add this directory to `.gitignore` — never commit the private key.
 
 ```
 .obsidiana/
-  server.key   ← Private key (JWK, keep secret)
-  server.pub   ← Public key (base64, distribute to clients)
+  server.key   ← Private key (JWK format — keep secret)
+  server.pub   ← Public key (base64 — embed in your client)
+```
+
+### Client bundles
+
+If `@obsidianasecmx/obsidiana-client` is installed, the server automatically builds four pre-configured client bundles on every boot and copies them to `.obsidiana/`. Each bundle has the server's public key hardcoded into it so clients can verify the server's identity without any extra configuration.
+
+```
+.obsidiana/
+  obsidiana-client.js      ← ES module  — React / React Native
+  obsidiana-client.min.js  ← ES module (minified) — React / React Native (production)
+  obsidiana-client.umd.js  ← UMD bundle — browsers (script tag)
+  obsidiana-client.node.js ← CommonJS   — Node.js server-to-server
+```
+
+**React / React Native** — use the ES module build:
+
+```jsx
+import ObsidianaClient from "./obsidiana-client.js";
+// or the minified build for production:
+// import ObsidianaClient from './obsidiana-client.min.js'
+
+const { createClient, createWSClient } = ObsidianaClient;
+```
+
+**Browser** — load the UMD bundle via a `<script>` tag:
+
+```html
+<script src="/obsidiana-client.umd.js"></script>
+<script>
+  const { createClient, createWSClient } = ObsidianaClient;
+</script>
+```
+
+**Node.js** — use the CommonJS build:
+
+```js
+const { createClient, createWSClient } = require("./obsidiana-client.node.js");
 ```
 
 ---
@@ -90,13 +125,13 @@ app.post("/api/echo", (req, res) => {
   res.json(200, { received: req.body });
 });
 
-// Public route — no encryption needed
+// Public route — plaintext, no encryption
 app.public.get("/health", (req, res) => {
   res.json(200, { status: "ok" });
 });
 
 app.listen(3000).then(({ port }) => {
-  console.log(`Server running on port ${port}`);
+  console.log(`Listening on port ${port}`);
 });
 ```
 
@@ -106,34 +141,36 @@ app.listen(3000).then(({ port }) => {
 
 ```js
 const app = createObsidiana({
-  // Maximum request body size (default: 512 KB)
+  // Maximum request body size in bytes (default: 512 KB)
   maxBodySize: 1024 * 1024,
 
-  // Proof-of-Work (see PoW section)
+  // Proof-of-Work options
   pow: {
-    min: 2,           // Minimum difficulty (leading zero bits)
-    max: 8,           // Maximum difficulty under load
-    window: 10,       // Seconds window to measure request rate
-    challengeTTL: 30, // Seconds before a challenge expires
+    min: 2, // Minimum difficulty — leading zero bits (default: 2)
+    max: 8, // Maximum difficulty under load (default: 8)
+    window: 10, // Seconds window to measure request rate (default: 10)
+    challengeTTL: 30, // Seconds before a challenge expires (default: 30)
   },
 
-  // Rate limiting
+  // Rate limiting (applied per IP + method + path)
   rateLimit: {
-    windowMs: 60000,  // Time window (ms)
-    max: 100,         // Max requests per window per IP+endpoint
+    enabled: true, // Set to false to disable (default: enabled)
+    windowMs: 60000, // Time window in milliseconds (default: 60000)
+    max: 100, // Max requests per window (default: 100)
+    message: "Too many requests",
   },
 
   // Authentication helpers
   auth: {
     cookies: {
-      secure: true,           // HTTPS only
-      httpOnly: true,         // Inaccessible from JS
-      sameSite: "Strict",     // SameSite policy
-      defaultMaxAge: 2592000, // 30 days (seconds)
-      signCookies: true,      // Sign with ECDSA
+      secure: true, // HTTPS only (default: true)
+      httpOnly: true, // Inaccessible from JavaScript (default: true)
+      sameSite: "Strict", // SameSite policy (default: "Strict")
+      defaultMaxAge: 2592000, // TTL in seconds — 30 days (default: 2592000)
+      signCookies: true, // ECDSA-sign each cookie (default: true)
     },
     tokens: {
-      defaultTTL: 604800,     // 7 days (seconds)
+      defaultTTL: 604800, // Token TTL in seconds — 7 days (default: 604800)
     },
   },
 });
@@ -145,17 +182,27 @@ const app = createObsidiana({
 
 ### Encrypted routes (default)
 
-All routes registered directly on `app` are **encrypted**. The crypto middleware automatically decrypts `req.body` before reaching your handler and encrypts the response after `res.json()` / `res.send()` / `res.text()`.
+Routes registered directly on `app` are **encrypted**. The crypto middleware decrypts `req.body` before your handler runs and encrypts the response when you call `res.json()`, `res.send()`, or `res.text()`. Clients must complete the handshake before accessing these routes.
 
 ```js
-app.get("/api/profile",    (req, res) => { /* ... */ });
-app.post("/api/messages",  (req, res) => { /* ... */ });
-app.put("/api/users/:id",  (req, res) => { /* ... */ });
-app.patch("/api/items/:id",(req, res) => { /* ... */ });
-app.delete("/api/posts/:id",(req, res) => { /* ... */ });
+app.get("/api/profile", (req, res) => {
+  /* ... */
+});
+app.post("/api/messages", (req, res) => {
+  /* ... */
+});
+app.put("/api/users/:id", (req, res) => {
+  /* ... */
+});
+app.patch("/api/items/:id", (req, res) => {
+  /* ... */
+});
+app.delete("/api/posts/:id", (req, res) => {
+  /* ... */
+});
 ```
 
-You can also use `app.on(method, path, handler)` for non-standard verbs:
+You can also use `app.on(method, path, handler)` directly:
 
 ```js
 app.on("GET", "/api/data", handler);
@@ -163,17 +210,17 @@ app.on("GET", "/api/data", handler);
 
 ### Public routes (no encryption)
 
-Routes registered under `app.public` skip the crypto middleware entirely. Use them for health checks, public APIs, or any endpoint that doesn't need confidentiality.
+Routes registered under `app.public` skip the crypto middleware entirely. Request bodies are parsed as plain JSON. Use these for health checks, public APIs, or any endpoint that does not require confidentiality.
 
 ```js
-app.public.get("/health",        (req, res) => res.json(200, { status: "ok" }));
-app.public.get("/api/public",    (req, res) => res.json(200, { data: "open" }));
+app.public.get("/health", (req, res) => res.json(200, { status: "ok" }));
+app.public.get("/api/open", (req, res) => res.json(200, { data: "public" }));
 app.public.post("/api/feedback", (req, res) => res.json(201, { ok: true }));
 ```
 
 ### Route parameters
 
-Use `:param` for dynamic segments and `*` for wildcards:
+Use `:param` for named segments and `*` for wildcards:
 
 ```js
 app.get("/users/:id", (req, res) => {
@@ -182,96 +229,94 @@ app.get("/users/:id", (req, res) => {
 });
 
 app.get("/files/*", (req, res) => {
-  const path = req.params[0]; // wildcard capture
-  res.json(200, { path });
+  const filePath = req.params[0]; // wildcard capture
+  res.json(200, { path: filePath });
 });
 ```
+
+If the path exists but the method doesn't match, the server responds with `405`. Unknown paths return `404`.
 
 ---
 
 ## Request & Response
 
-### Request object (`req`)
+### Request (`req`)
 
-The raw Node.js `IncomingMessage` is augmented with:
+The raw Node.js `IncomingMessage` is extended with:
 
-| Property | Type | Description |
-|---|---|---|
-| `req.body` | `any` | Decrypted and parsed request body |
-| `req.params` | `Record<string, string>` | Route parameters from URL |
-| `req.query` | `URLSearchParams` | Parsed query string |
-| `req.pathname` | `string` | URL path without query string |
-| `req.isAuthenticated` | `boolean` | Set by auth middleware |
-| `req.user` | `object \| null` | Authenticated user data |
-| `req.authMethod` | `string \| null` | `"cookie"`, `"bearer"`, or `"body"` |
-| `req.rawBody(limit?)` | `() => Promise<Uint8Array>` | Reads and buffers the raw request body |
-| `req.getCookie(name)` | `(name) => Promise<any>` | Reads and decrypts a cookie |
+| Property              | Type                                     | Description                            |
+| --------------------- | ---------------------------------------- | -------------------------------------- |
+| `req.body`            | `any`                                    | Decrypted and parsed request body      |
+| `req.params`          | `Record<string, string>`                 | Named route parameters                 |
+| `req.query`           | `URLSearchParams`                        | Parsed query string                    |
+| `req.pathname`        | `string`                                 | URL path without query string          |
+| `req.isAuthenticated` | `boolean`                                | `true` if a valid credential was found |
+| `req.user`            | `object \| null`                         | Authenticated user payload             |
+| `req.authMethod`      | `"cookie" \| "bearer" \| "body" \| null` | How the user authenticated             |
+| `req.rawBody(limit?)` | `() => Promise<Uint8Array>`              | Reads and buffers the raw request body |
+| `req.getCookie(name)` | `(name: string) => Promise<any>`         | Reads and decrypts a named cookie      |
 
 ```js
 app.post("/api/users", (req, res) => {
-  // req.body = { name: "Alice", email: "alice@example.com" }
   const { name, email } = req.body;
   const page = req.query.get("page") ?? "1";
   res.json(201, { id: "abc", name, email });
 });
 ```
 
-### Response object (`res`)
+### Response (`res`)
 
-The raw `ServerResponse` is augmented with:
+The raw `ServerResponse` is extended with:
 
-| Method | Description |
-|---|---|
-| `res.json(status, data)` | Sends JSON (encrypted on private routes) |
-| `res.send(status, body)` | Auto-detects content type (Buffer → octet-stream, object → JSON, string → text) |
-| `res.html(status, html)` | Sends HTML |
-| `res.setCookie(name, value, opts?)` | Sets an AES-GCM encrypted cookie |
-| `res.removeCookie(name)` | Clears a cookie |
-| `res.createToken(payload, ttl?)` | Creates an encrypted stateless token |
+| Method                              | Description                                                                                  |
+| ----------------------------------- | -------------------------------------------------------------------------------------------- |
+| `res.json(status, data, headers?)`  | Sends JSON (encrypted on private routes)                                                     |
+| `res.send(status, body, headers?)`  | Auto-detects content type: `Uint8Array` → `octet-stream`, object → JSON, string → plain text |
+| `res.html(status, html, headers?)`  | Sends HTML                                                                                   |
+| `res.setCookie(name, value, opts?)` | Encrypts and sets a cookie (`__Secure-obs-` prefixed)                                        |
+| `res.removeCookie(name)`            | Clears a cookie by setting `Max-Age=0`                                                       |
+| `res.createToken(payload, ttl?)`    | Generates an AES-GCM + ECDSA-signed stateless token                                          |
 
-Every response automatically includes `X-Powered-By: obsidiana-server` and `X-Obsidiana-Protocol: obsidiana-v1` headers.
+All responses automatically include `X-Powered-By: obsidiana-server` and `X-Obsidiana-Protocol: obsidiana-v1`.
+
+If a handler returns without calling any response method, the server automatically sends `204 No Content`.
 
 ---
 
 ## WebSocket
 
-WebSocket connections go through the same PoW + ECDH handshake as HTTP. After the handshake, all messages are AES-GCM-256 encrypted automatically.
+Enable WebSocket support by passing `{ ws: true }` to `listen()`, then register handlers with `app.ws(path, handler)`.
+
+Each WebSocket connection runs the full PoW + ECDH handshake immediately after the upgrade. The handler is only called once the handshake completes. After that, `socket.send()` automatically encrypts outgoing messages and `socket.on("obsidiana:message", handler)` delivers decrypted incoming messages.
 
 ```js
 const app = createObsidiana();
 
-app.ws("/live", (socket, req) => {
+app.ws("/chat", (socket, req) => {
   console.log("Client connected");
 
-  // Receives decrypted data
   socket.on("obsidiana:message", (data) => {
     console.log("Received:", data);
-    // Sends encrypted reply
-    socket.send({ pong: data });
+    socket.send({ echo: data }); // automatically encrypted
   });
 
   socket.on("close", () => {
     console.log("Client disconnected");
   });
-
-  socket.on("error", (err) => {
-    console.error("Socket error:", err);
-  });
 });
 
-// Enable WebSocket support in listen()
 app.listen(3000, { ws: true });
 ```
 
-### WebSocket socket API
+Supported socket events:
 
-| Method / Event | Description |
-|---|---|
-| `socket.send(data)` | Encrypts and sends any JSON-serializable value |
-| `socket.close(code?, reason?)` | Closes the connection (codes per RFC 6455) |
-| `socket.on("obsidiana:message", fn)` | Fires with **decrypted** message data |
-| `socket.on("close", fn)` | Fires when connection is closed |
-| `socket.on("error", fn)` | Fires on socket error |
+| Event               | Description               |
+| ------------------- | ------------------------- |
+| `obsidiana:message` | Decrypted message payload |
+| `close`             | Connection closed         |
+| `error`             | Socket error              |
+
+The WebSocket implementation has no external dependencies — frames are encoded and decoded from raw TCP per RFC 6455. Supported opcodes: `text`, `binary`, `ping/pong`, `close`. Maximum message size: 1 MB. Handshake timeout: 30 seconds.
 
 ---
 
@@ -279,164 +324,181 @@ app.listen(3000, { ws: true });
 
 ### Built-in middleware
 
+All built-in middleware is available under the `middleware` export:
+
 ```js
-const { createObsidiana, middleware } = require("@obsidianasecmx/obsidiana-server");
-
-const app = createObsidiana();
-
-// Cross-Origin Resource Sharing
-app.use(middleware.cors({
-  origin: "https://myapp.com",
-  methods: "GET,POST,PUT,DELETE",
-  headers: "Content-Type,Authorization",
-}));
-
-// Request logging → "POST /api/users 201 34ms"
-app.use(middleware.logger());
-
-// Security headers (XSS, CSP, HSTS, X-Frame-Options, etc.)
-app.use(middleware.securityHeaders({
-  hsts: true,
-  hstsMaxAge: 31536000,
-  csp: true,
-}));
-
-// Rate limiting per IP + endpoint
-app.use(middleware.rateLimit({
-  windowMs: 60000, // 1 minute
-  max: 100,        // 100 requests per window
-  message: "Too many requests",
-}));
+const { middleware } = require("@obsidianasecmx/obsidiana-server");
 ```
+
+#### `middleware.cors(options?)`
+
+Adds `Access-Control-*` headers and handles `OPTIONS` preflight requests (returns `204`).
+
+```js
+app.use(
+  middleware.cors({
+    origin: "https://example.com", // default: "*"
+    methods: "GET,POST,PUT,PATCH,DELETE,OPTIONS", // default
+    headers: "Content-Type,Authorization", // default
+  }),
+);
+```
+
+#### `middleware.logger()`
+
+Logs each request to stdout when the response finishes:
+
+```
+POST /api/echo 200 12ms
+```
+
+```js
+app.use(middleware.logger());
+```
+
+#### `middleware.securityHeaders(options?)`
+
+Adds: `X-XSS-Protection`, `X-Content-Type-Options`, `X-Frame-Options: DENY`, `Referrer-Policy`, `Strict-Transport-Security`, `Content-Security-Policy`, and `Permissions-Policy`.
+
+```js
+app.use(
+  middleware.securityHeaders({
+    hsts: true, // default: true
+    hstsMaxAge: 31536000, // default: 1 year
+    csp: true, // default: true
+  }),
+);
+```
+
+> `securityHeaders()` and `rateLimit()` are applied automatically by the server during `listen()`. You only need to call them manually if you want to customise their options before the server's automatic setup.
+
+#### `middleware.rateLimit(options?)`
+
+In-memory sliding window rate limiter, keyed by `IP + method + path`. Expired entries are cleaned every 60 seconds.
+
+```js
+app.use(
+  middleware.rateLimit({
+    windowMs: 60000, // default: 60 seconds
+    max: 100, // default: 100 requests
+    message: "Too many requests",
+  }),
+);
+```
+
+Responds with `429` when the limit is exceeded.
 
 ### Custom middleware
 
-Middleware functions receive `(req, res, next)` — call `next()` to continue or omit it to end the pipeline early.
+Middleware functions receive `(req, res, next)` and must call `next()` to continue. Async functions are fully supported.
 
 ```js
-// Synchronous middleware
-app.use((req, res, next) => {
-  req.startTime = Date.now();
-  next();
-});
-
-// Async middleware
 app.use(async (req, res, next) => {
-  const ip = req.headers["x-forwarded-for"] || req.socket.remoteAddress;
-  if (await isBlocked(ip)) {
-    return res.send(403);
-  }
-  next();
-});
-
-// Error handling (call next(err) or throw)
-app.use((req, res, next) => {
-  try {
-    // ... something that might throw
-    next();
-  } catch (err) {
-    next(err); // or just throw
-  }
+  console.log(`[${req.method}] ${req.pathname}`);
+  await next();
 });
 ```
-
-The middleware pipeline runs **before** route handlers. The internal order is:
-
-1. Security headers
-2. Rate limiting
-3. **Crypto middleware** (decrypts `req.body`)
-4. Auth middleware (populates `req.user`)
-5. Your `app.use()` middleware
-6. Route handler
 
 ---
 
 ## Authentication
 
-Obsidiana Server includes three authentication strategies, resolved in priority order: **auth cookie → Bearer token → token in body**.
+Obsidiana Server includes a unified auth middleware that resolves a user identity from three sources in order:
 
-### Cookies
+1. **`auth` cookie** — the `__Secure-obs-auth` encrypted cookie (browser clients)
+2. **`Authorization: Bearer <token>`** header (API clients)
+3. **`req.body.token`** field (mobile apps)
 
-Cookies are AES-GCM-256 encrypted and optionally ECDSA-signed using the server's identity key. They survive server restarts because the encryption key is derived from the persistent identity keypair.
+After resolution, every request has:
 
 ```js
-// Set an encrypted cookie
-app.post("/api/login", async (req, res) => {
-  const { username, password } = req.body;
-  const user = await authenticate(username, password);
-  if (!user) return res.send(401);
+req.isAuthenticated; // boolean
+req.user; // decrypted payload object or null
+req.authMethod; // "cookie" | "bearer" | "body" | null
+```
 
-  // Encrypted cookie — stored as __Secure-obs-auth
+### Encrypted cookies
+
+Cookies are AES-GCM-256 encrypted and optionally ECDSA-signed. The encryption key is derived from the server's identity private key via HKDF, so cookies survive server restarts.
+
+Cookie format on the wire: `__Secure-obs-<name>=v1:<base64url(iv+ciphertext)>:<base64url(signature)>`
+
+```js
+// Set a cookie
+app.post("/login", async (req, res) => {
+  const user = await validateCredentials(req.body);
   await res.setCookie("auth", { userId: user.id, role: user.role });
   res.json(200, { ok: true });
 });
 
-// Read cookie
+// Read a cookie
 app.get("/api/me", async (req, res) => {
-  const auth = await req.getCookie("auth");
-  if (!auth) return res.send(401);
-  res.json(200, { userId: auth.userId, role: auth.role });
+  const session = await req.getCookie("auth");
+  res.json(200, session);
 });
 
-// Remove cookie
-app.post("/api/logout", (req, res) => {
+// Remove a cookie
+app.post("/logout", (req, res) => {
   res.removeCookie("auth");
-  res.send(200);
+  res.json(200, { ok: true });
 });
 ```
 
-Cookie options:
+Cookie options (passed as third argument to `res.setCookie`):
+
+| Option     | Default    | Description                    |
+| ---------- | ---------- | ------------------------------ |
+| `maxAge`   | `2592000`  | TTL in seconds (30 days)       |
+| `path`     | `"/"`      | Cookie path                    |
+| `domain`   | —          | Cookie domain                  |
+| `httpOnly` | `true`     | Not accessible from JavaScript |
+| `secure`   | `true`     | HTTPS only                     |
+| `sameSite` | `"Strict"` | SameSite policy                |
+
+### Stateless tokens
+
+Tokens are AES-GCM-256 encrypted and ECDSA-signed. They embed `iat`, `exp`, and a random `jti`.
+
+Token format: `v1:<base64url(iv+ciphertext)>:<base64url(signature)>`
 
 ```js
-await res.setCookie("session", data, {
-  maxAge: 86400,       // 1 day in seconds (overrides defaultMaxAge)
-  path: "/api",        // Path scope
-  domain: ".myapp.com" // Domain scope
-});
-```
-
-### Tokens
-
-Stateless encrypted tokens for API clients and mobile apps. Token format: `v1:encrypted:signature`. All data lives inside the token — no database needed.
-
-```js
-// Generate a token
-app.post("/api/auth/token", async (req, res) => {
-  const user = await authenticate(req.body);
-  if (!user) return res.send(401);
-
-  // Token encrypted + signed with server identity key
-  const token = await res.createToken(
-    { userId: user.id, role: user.role },
-    604800 // TTL in seconds (7 days)
-  );
+// Issue a token
+app.post("/login", async (req, res) => {
+  const user = await validateCredentials(req.body);
+  const token = await res.createToken({ userId: user.id }, 3600); // 1-hour TTL
   res.json(200, { token });
 });
 
-// Client sends: Authorization: Bearer <token>
-// Or: req.body.token = "<token>"
-// Auth middleware verifies and sets req.user automatically
+// Client sends on subsequent requests:
+// Authorization: Bearer <token>
+// The auth middleware verifies and decrypts it automatically.
 ```
+
+Tokens can be revoked by JTI using the internal `ObsidianaTokenManager.revoke(jti)` method. Revoked JTIs are held in memory until their natural expiration.
 
 ### requireAuth / optionalAuth
 
 ```js
-const { requireAuth, optionalAuth } = require("@obsidianasecmx/obsidiana-server");
+const {
+  requireAuth,
+  optionalAuth,
+} = require("@obsidianasecmx/obsidiana-server");
 
-// Requires authentication — returns 401 if not authenticated
-app.get("/api/profile", requireAuth(async (req, res) => {
-  // req.user is guaranteed to be set here
-  res.json(200, { user: req.user });
-}));
+// Returns 401 if req.isAuthenticated is false
+app.get(
+  "/api/profile",
+  requireAuth(async (req, res) => {
+    res.json(200, { user: req.user });
+  }),
+);
 
-// Optional — req.user may or may not be set
-app.get("/api/feed", optionalAuth(async (req, res) => {
-  if (req.isAuthenticated) {
-    res.json(200, { feed: await getPersonalizedFeed(req.user.userId) });
-  } else {
-    res.json(200, { feed: await getPublicFeed() });
-  }
-}));
+// Passes through regardless; req.user may be null
+app.get(
+  "/api/feed",
+  optionalAuth(async (req, res) => {
+    res.json(200, { personalized: !!req.user });
+  }),
+);
 ```
 
 ---
@@ -444,116 +506,127 @@ app.get("/api/feed", optionalAuth(async (req, res) => {
 ## Static Files
 
 ```js
-const { createObsidiana, serveStatic } = require("@obsidianasecmx/obsidiana-server");
+const { serveStatic } = require("@obsidianasecmx/obsidiana-server");
 
-const app = createObsidiana();
-
-// Basic static serving
-app.use(serveStatic("./public"));
-
-// SPA mode — all unmatched routes serve index.html
-app.use(serveStatic("./dist", { spa: true }));
-
-app.listen(3000);
+app.use(
+  serveStatic("./public", {
+    spa: false, // Serve index.html on 404 (SPA mode) — default: false
+    index: "index.html", // Directory index file — default: "index.html"
+    maxAge: 3600, // Cache-Control max-age in seconds — default: 3600
+    etag: true, // ETag + 304 responses — default: true
+    lastModified: true, // Last-Modified header — default: true
+  }),
+);
 ```
 
-Static middleware options:
+Features:
 
-| Option | Default | Description |
-|---|---|---|
-| `spa` | `false` | Serve `index.html` for unmatched routes (React, Vue, etc.) |
-| `index` | `"index.html"` | Default file for directory requests |
-| `maxAge` | `3600` | Cache max age in seconds |
-| `etag` | `true` | Enable ETag for conditional requests |
-| `lastModified` | `true` | Enable Last-Modified header |
+- **MIME type detection** for 25+ extensions
+- **ETag + Last-Modified** — returns `304 Not Modified` when the client's cache is fresh
+- **Range requests** — returns `206 Partial Content` for streaming/resumable downloads
+- **SPA fallback** — serves `index.html` on any unmatched path when `spa: true`
+- **Path traversal protection** — paths are normalized and confined to the root directory
+- **Forbidden paths** — requests to `.env`, `.git`, `.obsidiana`, `node_modules`, `package.json`, `server.key`, and `server.pub` always return `403`
 
-Encrypted API routes always take precedence over static files. The following paths are blocked for security: `.env`, `.git`, `.obsidiana`, `node_modules`, `package.json`, `server.key`.
-
-**Supported features:** MIME detection, ETags, 304 Not Modified, Range requests (partial content), path traversal protection, directory index fallback.
+The static middleware checks the router first — if a registered route matches the path, the middleware is skipped and the route handler runs instead.
 
 ---
 
 ## Proof-of-Work (PoW)
 
-The PoW system defends the handshake endpoint against flooding attacks. Before the ECDH key exchange can happen, the client must solve a SHA-256 puzzle.
+PoW prevents handshake flooding by requiring clients to perform a small computational task before establishing a session. Difficulty scales dynamically with the current request rate.
 
-**How it works:**
+**Challenge lifecycle:**
 
-1. Client calls `GET /q` — server returns a challenge `{ hash, difficulty, ttl }` signed with its identity key.
-2. Client verifies the server's signature (confirms it's talking to the right server).
-3. Client finds a `nonce` such that `SHA-256(hash + nonce)` starts with `difficulty` leading zero bits.
-4. Client includes the `nonce` and its own ECDSA signature in the `POST /q` offer.
-5. Server verifies both the PoW solution and the client signature, then completes ECDH.
-
-**Dynamic difficulty** — difficulty scales linearly from `min` to `max` based on the request rate in the last `window` seconds. At 20 req/window the difficulty is at maximum:
+1. Client requests a challenge via `GET /q`. The server returns a random hash + difficulty level, signed with the server identity key. Challenges expire after `challengeTTL` seconds.
+2. Client finds a `nonce` such that `SHA-256(hash + nonce)` has `difficulty` leading zero bits. The client also signs the challenge blob with its own ECDSA key.
+3. Client sends the solution, its ECDH public key, and a SHA-256 hash of the expected server public key in `POST /q`. The server verifies the PoW solution, the ECDSA signature, and the server key hash. An invalid nonce **deletes the challenge** — only one attempt is allowed.
 
 ```js
 const app = createObsidiana({
   pow: {
-    min: 2,           // ~4 SHA-256 attempts at idle
-    max: 8,           // ~256 SHA-256 attempts under load
-    window: 10,       // Rate measured over 10 seconds
-    challengeTTL: 30, // Challenge expires in 30 seconds
-  }
+    min: 2, // ~4 SHA-256 attempts at idle
+    max: 8, // ~256 SHA-256 attempts under heavy load
+    window: 10, // Rate measured over last 10 seconds
+    challengeTTL: 30, // Challenge expires after 30 seconds
+  },
 });
 ```
+
+Difficulty formula:
+
+```
+difficulty = round(min + clamp(requestsInWindow / 20, 0, 1) * (max - min))
+```
+
+The challenge blob binary format:  
+`id (32 bytes) | difficulty (1 byte) | ttl (2 bytes) | hash (64 bytes)` → base64
 
 ---
 
 ## Session Management
 
-Sessions are stored in memory with a 2-hour TTL. Key design decisions:
+Sessions are stored in memory with a **2-hour TTL**. Key design decisions:
 
-- **Session IDs are never transmitted.** Instead, a 16-character HMAC-derived "static hint" is embedded in every encrypted message. The server uses this hint to look up the session without exposing the real session ID on the wire.
-- **Nonce registry prevents replay attacks.** Every message nonce is permanently registered. Reused nonces are rejected with 401. The registry holds up to 50,000 nonces (FIFO eviction).
+- **Session IDs are never transmitted.** A 16-character HMAC-derived "static hint" (`aad.hs`) is embedded in every encrypted message. The server uses this hint to look up the session without exposing the real session ID on the wire.
+- **Replay protection via nonce registry.** Every message nonce is registered permanently in a `Map`. Reused nonces are rejected with `401`. The registry holds up to 50,000 entries with FIFO eviction.
 - **Automatic garbage collection** runs every 5 minutes, removing sessions older than 2 hours.
+- **Optional ratchet encryption.** If a `DoubleRatchet` instance is provided during handshake, the session uses forward-secret ratchet encryption on top of the base AES-GCM session.
 
-> Sessions are **ephemeral** — they are lost on server restart. For persistent sessions, clients must re-establish the handshake.
+> Sessions are **ephemeral** — they are lost on server restart. Clients must re-run the handshake to establish a new session.
 
 ---
 
 ## Server Identity
 
-On first boot, Obsidiana Server generates a persistent ECDSA P-256 keypair and stores it in `.obsidiana/`:
+On first boot, Obsidiana Server generates a persistent **ECDSA P-256** keypair stored in `.obsidiana/`:
 
 ```
 .obsidiana/
-  server.key   ← Private key (JWK format, never share this)
-  server.pub   ← Public key (base64, embed in your client)
+  server.key   ← Private key (JWK format — never share this)
+  server.pub   ← Public key (base64 uncompressed P-256 point)
 ```
 
 The identity keypair is used for:
-- **Signing PoW challenges** — clients verify this signature to confirm the server's authenticity.
-- **Deriving encryption keys** for cookies and tokens (via HKDF from the private key).
-- **Cookie signing** — ECDSA signatures on encrypted cookies to detect tampering.
 
-The client must embed the server's public key (from `.obsidiana/server.pub`) to verify the server's identity during handshake. If `obsidiana-client` is installed as a sibling package, Obsidiana Server automatically builds a pre-configured client bundle with the server key hardcoded.
+- **Signing PoW challenges** — clients verify the signature to confirm the server's authenticity before investing CPU.
+- **Verifying client offers** — clients sign the challenge blob with their own ECDSA key; the server verifies this during `POST /q`.
+- **Server key hash pinning** — clients include a SHA-256 hash of the expected server public key in their offer; the server rejects mismatches.
+- **Deriving cookie encryption keys** — via HKDF from the private key (`salt: "obsidiana-cookie-v2"`), making cookies valid across restarts.
+- **Deriving token encryption keys** — via HKDF from the private key (`salt: "obsidiana-token-v2"`).
+- **Signing cookies** — each encrypted cookie carries an ECDSA signature to detect tampering.
+- **Signing tokens** — each token is ECDSA-signed before being issued.
+- **Building client bundles** — on every boot, if `obsidiana-client` is present, four bundles are generated with the server public key baked in and written to `.obsidiana/` (see [Client bundles](#client-bundles)).
 
 ---
 
 ## Security Model
 
-| Threat | Mitigation |
-|---|---|
-| Passive eavesdropping | AES-GCM-256 per session, established via ECDH |
-| MITM on handshake | Server identity signature (PoW challenge signed with persistent ECDSA key) |
-| Handshake flooding | Dynamic Proof-of-Work (difficulty scales with request rate) |
-| Message tampering | GCM authentication tag + ECDSA-signed AAD on every message |
-| Replay attacks | Per-message nonce + ±60s timestamp window + permanent nonce registry |
-| Session confusion | HMAC-derived session hints — session ID never on the wire |
-| Brute-force PoW | Invalid nonce deletes challenge (only one try per challenge) |
-| Path traversal | Normalized static paths, forbidden prefix list |
-| XSS / Clickjacking | `securityHeaders()` middleware (CSP, X-Frame-Options, HSTS) |
-| Rate abuse | Built-in rate limiter per IP + endpoint |
-| Cookie theft | HttpOnly + Secure + SameSite=Strict by default |
-| Cookie tampering | AES-GCM encryption + ECDSA signature |
-| Token forgery | AES-GCM encryption + ECDSA signature + expiration |
+| Threat                     | Mitigation                                                                   |
+| -------------------------- | ---------------------------------------------------------------------------- |
+| Passive eavesdropping      | AES-GCM-256 per session, key established via ECDH                            |
+| MITM on handshake          | Server identity ECDSA signature on every PoW challenge                       |
+| Wrong server (key pinning) | Client embeds SHA-256 of server public key; server rejects mismatches        |
+| Handshake flooding         | Dynamic PoW — difficulty scales linearly with request rate                   |
+| Message tampering          | GCM authentication tag on every message                                      |
+| Replay attacks             | Per-message nonce in AAD + permanent nonce registry (50k cap, FIFO eviction) |
+| Session confusion          | HMAC-derived static hints — real session ID never leaves the server          |
+| PoW brute-force            | Invalid nonce deletes the challenge — one attempt per challenge              |
+| Client impersonation       | Client ECDSA-signs the challenge blob during handshake                       |
+| Path traversal             | Static paths normalized + forbidden prefix list                              |
+| XSS / Clickjacking         | `securityHeaders()` applied automatically (CSP, X-Frame-Options, HSTS)       |
+| Rate abuse                 | Built-in rate limiter per IP + method + path                                 |
+| Cookie theft               | `HttpOnly` + `Secure` + `SameSite=Strict` by default                         |
+| Cookie tampering           | AES-GCM-256 encryption + ECDSA signature per cookie                          |
+| Token forgery              | AES-GCM-256 encryption + ECDSA signature + `exp` + `jti`                     |
+| Body size abuse            | 512 KB limit on encrypted routes; 64 KB limit on handshake endpoint          |
+| WebSocket flooding         | 1 MB per-message limit + 30-second handshake timeout                         |
 
-### What is not provided
+### Known limitations
 
-- **Mutual client authentication by default.** The PoW handshake proves the client did work, not who the client is. For identity binding, issue a signed token after login and include it in subsequent handshakes.
-- **Persistent sessions.** Sessions live in memory and are lost on restart. For production, replace `ObsidianaSessionStore` with a Redis-backed store.
-- **Horizontal scaling.** The in-memory session store does not share state across processes. Use sticky sessions or a shared store for multi-instance deployments.
+- **No mutual client authentication by default.** PoW proves the client did computational work, not who they are. For identity binding, issue a signed token after login and include it in subsequent requests.
+- **Ephemeral sessions.** Sessions live in memory and are lost on restart. For production, replace the in-memory store with a Redis-backed implementation.
+- **Single-process only.** The in-memory session store does not share state across processes. Multi-instance deployments require sticky sessions or an external shared store.
 
 ---
 
@@ -564,44 +637,56 @@ createObsidiana(options)
       │
       └── new Server(options)
               │
-              ├── MiddlewarePipeline     ← Sequential middleware execution
-              ├── Router                 ← Path + method matching, :params, *wildcards
-              ├── ObsidianaWS            ← WebSocket upgrade + PoW + ECDH per socket
-              ├── ObsidianaSessionStore  ← In-memory sessions + nonce registry
-              ├── ObsidianaPOW           ← Dynamic PoW challenges + verification
-              ├── ObsidianaIdentity      ← Persistent ECDSA keypair (disk)
+              ├── MiddlewarePipeline     — sequential middleware execution
+              ├── Router                 — method + path matching, :params, * wildcards
+              ├── ObsidianaWS            — WebSocket upgrade, PoW + ECDH per socket
+              ├── ObsidianaSessionStore  — in-memory sessions (2h TTL) + nonce registry
+              ├── ObsidianaPOW           — dynamic challenge generation + SHA-256 verification
+              ├── ObsidianaIdentity      — persistent ECDSA P-256 keypair (disk)
               │
-              └── _ensureInit() on listen()
+              └── _ensureInit() — called once on first listen()
                       │
-                      ├── ObsidianaCookieManager (derived from identity key)
-                      ├── ObsidianaTokenManager  (derived from identity key)
-                      ├── securityHeaders()  middleware
-                      ├── rateLimit()        middleware
-                      ├── obsidianaCrypto()  middleware  ← decrypt req / encrypt res
-                      ├── createAuthMiddleware()          ← populate req.user
-                      ├── registerProtocol() → GET /q, POST /q
-                      └── ObsidianaWS.init()
+                      ├── ObsidianaCookieManager  — HKDF-derived AES key, AES-GCM + ECDSA
+                      ├── ObsidianaTokenManager   — HKDF-derived AES key, AES-GCM + ECDSA
+                      ├── securityHeaders()        — auto-applied
+                      ├── rateLimit()              — auto-applied
+                      ├── obsidianaCrypto()        — decrypt req body / encrypt res body
+                      ├── createAuthMiddleware()   — populate req.user from cookie/bearer/body
+                      ├── registerProtocol()       — registers GET /q and POST /q
+                      ├── ObsidianaWS.init()
+                      └── _buildClient()           — builds obsidiana-client bundle if present
 ```
 
 ### Request lifecycle (encrypted route)
 
 ```
-HTTP Request
+Incoming HTTP request
     │
-    ├── wrapRequest()         → adds query, pathname, params, rawBody()
-    ├── wrapResponse()        → adds send(), json(), html()
+    ├── wrapRequest()          — adds query, pathname, params, rawBody(), getCookie()
+    ├── wrapResponse()         — adds send(), json(), html(), setCookie(), createToken()
     │
-    ├── MiddlewarePipeline.run()
-    │       ├── securityHeaders()
-    │       ├── rateLimit()
-    │       ├── obsidianaCrypto()  → decode CBOR → resolve session → decrypt req.body
-    │       │                         wrap res.json/send with encryptAndSend()
-    │       └── authMiddleware()   → check cookie/Bearer/body token → req.user
-    │
-    ├── Router.match()        → find handler, extract params
+    └── MiddlewarePipeline.run()
+            ├── securityHeaders()
+            ├── rateLimit()
+            ├── obsidianaCrypto()
+            │     ├── Route exists? Public? Bypass path? → skip if so
+            │     ├── Read raw CBOR body (or _d query param for encrypted GETs)
+            │     ├── Decode CBOR envelope → extract AAD → resolve session via static hint
+            │     ├── Decrypt body (AES-GCM or ratchet)
+            │     ├── Claim nonce → reject replay with 401
+            │     └── Wrap res.json/send/html with encryptAndSend()
+            └── authMiddleware()
+                  ├── Try __Secure-obs-auth cookie
+                  ├── Try Authorization: Bearer <token>
+                  ├── Try req.body.token
+                  └── Set req.user, req.isAuthenticated, req.authMethod
+
+    └── Router.match()         — find handler, populate req.params
     └── handler(req, res)
             └── res.json(200, data)
-                    └── encryptAndSend() → cipher.encrypt(data) → CBOR → wire
+                    └── encryptAndSend()
+                            └── cipher.encrypt(data, { sessionId })
+                                    └── CBOR encode → write to socket
 ```
 
 ---
@@ -611,41 +696,58 @@ HTTP Request
 ### `createObsidiana(options?)`
 
 ```
-createObsidiana(options?)  →  Server instance
+createObsidiana(options?)  →  Server
 
-options.maxBodySize?       number    — default: 524288 (512 KB)
-options.pow?               object    — PoW configuration
-options.rateLimit?         object    — Rate limit configuration
-options.auth?.cookies?     object    — Cookie manager options
-options.auth?.tokens?      object    — Token manager options
+options.maxBodySize?                 number   — max body bytes (default: 524288)
+options.pow.min?                     number   — min PoW difficulty (default: 2)
+options.pow.max?                     number   — max PoW difficulty (default: 8)
+options.pow.window?                  number   — rate window in seconds (default: 10)
+options.pow.challengeTTL?            number   — challenge TTL in seconds (default: 30)
+options.rateLimit.enabled?           boolean  — disable rate limiting (default: true)
+options.rateLimit.windowMs?          number   — window in ms (default: 60000)
+options.rateLimit.max?               number   — max requests per window (default: 100)
+options.rateLimit.message?           string   — 429 message
+options.auth.cookies.secure?         boolean  — (default: true)
+options.auth.cookies.httpOnly?       boolean  — (default: true)
+options.auth.cookies.sameSite?       string   — (default: "Strict")
+options.auth.cookies.defaultMaxAge?  number   — seconds (default: 2592000)
+options.auth.cookies.signCookies?    boolean  — (default: true)
+options.auth.tokens.defaultTTL?      number   — seconds (default: 604800)
 ```
 
 ### `Server`
 
-```
-// Route registration (encrypted)
+```js
+// Encrypted route registration
 app.get(path, handler)
 app.post(path, handler)
 app.put(path, handler)
 app.patch(path, handler)
 app.delete(path, handler)
-app.on(method, path, handler)
+app.head(path, handler)
+app.options(path, handler)
+app.on(method, path, handler)    // generic
 
-// Route registration (public)
+// Public (plaintext) route registration
 app.public.get(path, handler)
 app.public.post(path, handler)
-// ... same methods
+app.public.put(path, handler)
+app.public.patch(path, handler)
+app.public.delete(path, handler)
+app.public.head(path, handler)
+app.public.options(path, handler)
 
 // Middleware
 app.use(...fns)
 
 // WebSocket
-app.ws(path, handler)
+app.ws(path, (socket, req) => void)
 
 // Lifecycle
 app.listen(port?, options?)  →  Promise<{ port, host, ws }>
-  options.ws?     boolean   — enable WebSocket support (default: false)
-  options.host?   string    — bind address (default: "0.0.0.0")
+  options.ws?     boolean  — enable WebSocket support (default: false)
+  options.host?   string   — bind address (default: "0.0.0.0")
+
 app.close()  →  Promise<void>
 ```
 
@@ -654,55 +756,50 @@ app.close()  →  Promise<void>
 ```js
 const { middleware } = require("@obsidianasecmx/obsidiana-server");
 
-middleware.cors(options?)
-  options.origin?   string   — default: "*"
-  options.methods?  string   — default: "GET,POST,PUT,PATCH,DELETE,OPTIONS"
-  options.headers?  string   — default: "Content-Type,Authorization"
-
+middleware.cors({ origin?, methods?, headers? })
 middleware.logger()
-
-middleware.securityHeaders(options?)
-  options.hsts?        boolean  — default: true
-  options.hstsMaxAge?  number   — default: 31536000
-  options.csp?         boolean  — default: true
-
-middleware.rateLimit(options?)
-  options.windowMs?  number  — default: 60000
-  options.max?       number  — default: 100
-  options.message?   string  — default: "Too many requests"
+middleware.securityHeaders({ hsts?, hstsMaxAge?, csp? })
+middleware.rateLimit({ windowMs?, max?, message? })
 ```
 
 ### `serveStatic(root, options?)`
 
-```
-serveStatic(root, options?)  →  middleware function
+```js
+const { serveStatic } = require("@obsidianasecmx/obsidiana-server");
 
-options.spa?          boolean  — default: false
-options.index?        string   — default: "index.html"
-options.maxAge?       number   — default: 3600
-options.etag?         boolean  — default: true
-options.lastModified? boolean  — default: true
+serveStatic(root, {
+  spa?,           // boolean — SPA fallback (default: false)
+  index?,         // string  — index file name (default: "index.html")
+  maxAge?,        // number  — Cache-Control max-age seconds (default: 3600)
+  etag?,          // boolean — (default: true)
+  lastModified?,  // boolean — (default: true)
+})
 ```
 
 ### `requireAuth(handler)` / `optionalAuth(handler)`
 
-```
-requireAuth(handler)   →  wrapped handler — returns 401 if not authenticated
-optionalAuth(handler)  →  wrapped handler — passes through, req.user may be null
+```js
+const {
+  requireAuth,
+  optionalAuth,
+} = require("@obsidianasecmx/obsidiana-server");
+
+requireAuth(handler); // returns 401 if req.isAuthenticated === false
+optionalAuth(handler); // always runs; req.user may be null
 ```
 
 ### `req` additions
 
 ```
-req.body          any               — decrypted request body
-req.params        Record<str,str>   — route parameters
-req.query         URLSearchParams   — parsed query string
-req.pathname      string            — URL path
-req.isAuthenticated  boolean
-req.user          object | null
-req.authMethod    "cookie" | "bearer" | "body" | null
-req.rawBody(limit?)  () => Promise<Uint8Array>
-req.getCookie(name)  (name) => Promise<any>
+req.body                  any                              — decrypted request body
+req.params                Record<string, string>           — route parameters
+req.query                 URLSearchParams                  — parsed query string
+req.pathname              string                           — URL path
+req.isAuthenticated       boolean
+req.user                  object | null
+req.authMethod            "cookie" | "bearer" | "body" | null
+req.rawBody(limit?)       () => Promise<Uint8Array>
+req.getCookie(name)       (name: string) => Promise<any>
 ```
 
 ### `res` additions
@@ -711,13 +808,13 @@ req.getCookie(name)  (name) => Promise<any>
 res.json(status, data, headers?)
 res.send(status, body, headers?)
 res.html(status, html, headers?)
-res.setCookie(name, value, opts?)    →  Promise<void>
+res.setCookie(name, value, options?)   →  Promise<void>
 res.removeCookie(name)
-res.createToken(payload, ttl?)       →  Promise<string>
+res.createToken(payload, ttl?)         →  Promise<string>
 ```
 
 ---
 
 ## License
 
-See [LICENSE](./LICENSE).
+GPL-3.0 — see [LICENSE](./LICENSE).

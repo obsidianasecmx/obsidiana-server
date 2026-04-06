@@ -1,20 +1,17 @@
 "use strict";
 
 /**
- * Obsidiana Static File Server — Middleware for serving static files.
+ * Static file server middleware.
  *
- * Provides a static file serving middleware with:
- * - MIME type detection based on file extension
- * - SPA (Single Page Application) fallback (serves index.html on unmatched routes)
+ * Serves files from a given root directory with:
+ * - MIME type detection
+ * - SPA fallback (serves index.html on 404)
  * - Path traversal protection
- * - Directory index support (serves index.html inside folders)
- * - Cache-Control headers (1 hour default)
- * - Security headers (X-Content-Type-Options, X-Frame-Options)
- * - Conditional requests (ETag, Last-Modified, 304)
- * - Range requests support (partial content)
+ * - ETag and Last‑Modified support (304 responses)
+ * - Range requests (partial content)
+ * - Cache‑Control headers (1 hour default)
  *
- * The middleware checks if a route exists in the router before attempting
- * to serve a static file, ensuring encrypted routes take precedence.
+ * The middleware checks the router first: if a route matches, it is skipped.
  *
  * @module static
  * @public
@@ -24,10 +21,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 
-/**
- * MIME type mapping for common file extensions.
- * @private
- */
+/** @private */
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
   ".htm": "text/html; charset=utf-8",
@@ -55,13 +49,8 @@ const MIME_TYPES = {
   ".wav": "audio/wav",
 };
 
-/** Default MIME type for unknown extensions. @private */
 const DEFAULT_MIME = "application/octet-stream";
-
-/** Default cache TTL (1 hour). @private */
 const DEFAULT_CACHE_MAX_AGE = 3600;
-
-/** Paths that should never serve static files (security) */
 const FORBIDDEN_PATHS = [
   ".env",
   ".git",
@@ -74,36 +63,16 @@ const FORBIDDEN_PATHS = [
 ];
 
 /**
- * Creates a static file serving middleware.
+ * Creates static file serving middleware.
  *
- * The middleware serves files from the specified root directory.
- * If a file is not found and `spa: true` is set, it falls back to
- * serving `index.html` (for client-side routing in SPAs).
- *
- * The middleware checks registered routes first — if a route exists
- * (encrypted endpoint), it passes through instead of serving static files.
- *
- * @param {string} root - Absolute or relative path to the static directory
- * @param {object} [options] - Configuration options
- * @param {boolean} [options.spa=false] - Serve index.html for unmatched routes (SPA fallback)
- * @param {string} [options.index="index.html"] - Default index file name for directories
+ * @param {string} root - Static files root directory
+ * @param {object} [options] - Options
+ * @param {boolean} [options.spa=false] - Serve index.html on 404 (SPA mode)
+ * @param {string} [options.index="index.html"] - Index file name
  * @param {number} [options.maxAge=3600] - Cache max age in seconds
  * @param {boolean} [options.etag=true] - Enable ETag generation
- * @param {boolean} [options.lastModified=true] - Enable Last-Modified header
- * @returns {Function} Express-style middleware (req, res, next) => void
- *
- * @example
- * const { createObsidiana, serveStatic } = require('@obsidianasecmx/obsidiana-server');
- *
- * const app = createObsidiana();
- *
- * // Serve static files from ./public directory
- * app.use(serveStatic('./public'));
- *
- * // SPA mode (React, Vue) — all unmatched routes serve index.html
- * app.use(serveStatic('./dist', { spa: true }));
- *
- * app.listen(3000);
+ * @param {boolean} [options.lastModified=true] - Enable Last‑Modified header
+ * @returns {Function} Express‑style middleware
  */
 function serveStatic(root, options = {}) {
   const {
@@ -116,14 +85,11 @@ function serveStatic(root, options = {}) {
   const absRoot = path.resolve(root);
 
   return function staticMiddleware(req, res, next) {
-    // Only handle GET and HEAD requests
     if (req.method !== "GET" && req.method !== "HEAD") return next();
 
-    // Get pathname from request (already parsed by wrapRequest)
     const pathname =
       req.pathname ?? decodeURIComponent(new URL(req.url, "http://x").pathname);
 
-    // Check if the path is forbidden
     const normalizedPathname = pathname.toLowerCase();
     if (
       FORBIDDEN_PATHS.some((forbidden) =>
@@ -134,17 +100,14 @@ function serveStatic(root, options = {}) {
       return;
     }
 
-    // Check if route exists in router (encrypted routes take precedence)
     const router = req._serverRouter;
     if (router && router.match(req.method, pathname)) {
-      return next(); // Let the router handle it
+      return next();
     }
 
-    // Prevent path traversal attacks
     const safePath = path.normalize(pathname).replace(/^(\.\.(\/|\\|$))+/, "");
     let filePath = path.join(absRoot, safePath);
 
-    // Ensure the resolved path is within the static root
     if (!filePath.startsWith(absRoot)) {
       res.send(403);
       return;
@@ -159,22 +122,13 @@ function serveStatic(root, options = {}) {
 }
 
 /**
- * Attempts to serve a file, with directory index and SPA fallback support.
+ * Attempts to serve a file, handling directories and SPA fallback.
  *
- * @param {string} filePath - Absolute path to the requested file
- * @param {string} index - Index file name (e.g., "index.html")
- * @param {boolean} spa - Whether to fall back to index.html on 404
- * @param {string} absRoot - Absolute static root directory
- * @param {object} res - HTTP response object
- * @param {object} req - HTTP request object
- * @param {Function} next - Next middleware function
- * @param {object} options - Serve options
  * @private
  */
 function tryServe(filePath, index, spa, absRoot, res, req, next, options) {
   fs.stat(filePath, (err, stat) => {
     if (err) {
-      // File not found — try SPA fallback or pass through
       if (spa) {
         const indexPath = path.join(absRoot, index);
         return sendFile(indexPath, res, req, next, options);
@@ -182,7 +136,6 @@ function tryServe(filePath, index, spa, absRoot, res, req, next, options) {
       return next();
     }
 
-    // If path is a directory, try to serve index file inside it
     if (stat.isDirectory()) {
       return tryServe(
         path.join(filePath, index),
@@ -201,10 +154,10 @@ function tryServe(filePath, index, spa, absRoot, res, req, next, options) {
 }
 
 /**
- * Generates an ETag for a file based on inode, size, and mtime.
+ * Generates an ETag for a file.
  *
- * @param {fs.Stats} stat - File statistics
- * @returns {string} ETag value
+ * @param {fs.Stats} stat
+ * @returns {string}
  * @private
  */
 function generateETag(stat) {
@@ -214,26 +167,24 @@ function generateETag(stat) {
 }
 
 /**
- * Checks if the client has a valid cached version.
+ * Checks if the client has a cached version (304).
  *
- * @param {object} req - HTTP request
- * @param {fs.Stats} stat - File statistics
- * @param {string} etag - File ETag
- * @returns {boolean} True if client has the latest version
+ * @param {object} req
+ * @param {fs.Stats} stat
+ * @param {string} etag
+ * @returns {boolean}
  * @private
  */
 function isNotModified(req, stat, etag) {
   const ifNoneMatch = req.headers["if-none-match"];
   const ifModifiedSince = req.headers["if-modified-since"];
 
-  // Check ETag
   if (ifNoneMatch) {
     if (ifNoneMatch === etag || ifNoneMatch === `W/${etag}`) {
       return true;
     }
   }
 
-  // Check Last-Modified
   if (ifModifiedSince) {
     const ifModifiedSinceDate = new Date(ifModifiedSince);
     if (stat.mtime <= ifModifiedSinceDate) {
@@ -245,13 +196,8 @@ function isNotModified(req, stat, etag) {
 }
 
 /**
- * Streams a file to the response with appropriate headers.
+ * Streams a file to the response.
  *
- * @param {string} filePath - Absolute path to the file
- * @param {object} res - HTTP response object
- * @param {object} req - HTTP request object
- * @param {Function} next - Next middleware function
- * @param {object} options - Serve options
  * @private
  */
 function sendFile(filePath, res, req, next, options) {
@@ -263,10 +209,8 @@ function sendFile(filePath, res, req, next, options) {
     const ext = path.extname(filePath).toLowerCase();
     const contentType = MIME_TYPES[ext] ?? DEFAULT_MIME;
 
-    // Generate ETag
     const fileETag = etag ? generateETag(stat) : null;
 
-    // Check client cache
     if (fileETag && isNotModified(req, stat, fileETag)) {
       res.writeHead(304, {
         "X-Powered-By": "obsidiana-server",
@@ -279,34 +223,22 @@ function sendFile(filePath, res, req, next, options) {
       return;
     }
 
-    // Security headers for static files
     const headers = {
       "X-Powered-By": "obsidiana-server",
       "X-Obsidiana-Protocol": "obsidiana-v1",
       "Content-Type": contentType,
       "Content-Length": stat.size,
       "Cache-Control": `public, max-age=${maxAge}`,
-      // Security headers for static files
       "X-Content-Type-Options": "nosniff",
       "X-Frame-Options": "DENY",
       "X-XSS-Protection": "1; mode=block",
       "Referrer-Policy": "strict-origin-when-cross-origin",
     };
 
-    // Add ETag if enabled
-    if (fileETag) {
-      headers["ETag"] = fileETag;
-    }
-
-    // Add Last-Modified if enabled
-    if (lastModified) {
-      headers["Last-Modified"] = stat.mtime.toUTCString();
-    }
-
-    // Add Accept-Ranges for streaming support
+    if (fileETag) headers["ETag"] = fileETag;
+    if (lastModified) headers["Last-Modified"] = stat.mtime.toUTCString();
     headers["Accept-Ranges"] = "bytes";
 
-    // Check if client requests a specific range
     const rangeHeader = req.headers.range;
     if (rangeHeader) {
       const range = parseRange(rangeHeader, stat.size);
@@ -328,14 +260,12 @@ function sendFile(filePath, res, req, next, options) {
       }
     }
 
-    // HEAD requests only need headers
     if (req.method === "HEAD") {
       res.writeHead(200, headers);
       res.end();
       return;
     }
 
-    // Stream the file to response
     res.writeHead(200, headers);
     const stream = fs.createReadStream(filePath);
     stream.pipe(res);
@@ -346,11 +276,11 @@ function sendFile(filePath, res, req, next, options) {
 }
 
 /**
- * Parses Range header for partial content requests.
+ * Parses a Range header.
  *
- * @param {string} rangeHeader - Range header value (e.g., "bytes=0-1023")
- * @param {number} fileSize - Total file size in bytes
- * @returns {{ start: number, end: number } | null} Parsed range or null if invalid
+ * @param {string} rangeHeader - e.g. "bytes=0-1023"
+ * @param {number} fileSize
+ * @returns {object|null} { start, end } or null
  * @private
  */
 function parseRange(rangeHeader, fileSize) {

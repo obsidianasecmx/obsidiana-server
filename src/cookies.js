@@ -1,18 +1,13 @@
 "use strict";
 
 /**
- * Obsidiana Secure Cookies — Encrypted cookies with identity key.
+ * Encrypted cookie manager using the server's identity key.
  *
- * Provides AES-GCM-256 encrypted cookies using a key derived from the server's
- * identity keypair. Cookies can be optionally signed with ECDSA to detect
- * tampering.
+ * Provides AES‑GCM‑256 encryption and optional ECDSA signatures for cookies.
+ * The encryption key is derived from the server’s persistent identity key
+ * via HKDF, ensuring that cookies survive server restarts.
  *
- * Features:
- * - AES-GCM-256 encryption with key derived from identity key (persistent)
- * - Optional ECDSA signature for integrity
- * - Format: v1:encrypted:signature
- * - Survives server restarts
- * - HttpOnly + Secure + SameSite by default
+ * Cookie format: `v1:encryptedPayload[:signature]` (base64url).
  *
  * @module cookies
  * @private
@@ -20,11 +15,11 @@
 
 const { ObsidianaECDSA } = require("@obsidianasecmx/obsidiana-protocol");
 
-/** Prefix for secure cookies. @private */
+/** Prefix for all secure cookies to avoid collisions. @private */
 const COOKIE_PREFIX = "__Secure-obs-";
 
 /**
- * Manager for identity-key encrypted cookies.
+ * Manager for identity‑key encrypted cookies.
  *
  * @example
  * const cookies = new ObsidianaCookieManager(identity);
@@ -34,43 +29,43 @@ const COOKIE_PREFIX = "__Secure-obs-";
  */
 class ObsidianaCookieManager {
   /**
-   * Creates a new cookie manager instance.
+   * Creates a new cookie manager.
    *
-   * @param {ObsidianaIdentity} identity - Identity keypair for signatures
-   * @param {object} [options] - Optional configuration
+   * @param {ObsidianaIdentity} identity - Persistent server identity keypair
+   * @param {object} [options] - Optional settings
    * @param {boolean} [options.secure=true] - HTTPS only flag
-   * @param {boolean} [options.httpOnly=true] - Not accessible by JavaScript
+   * @param {boolean} [options.httpOnly=true] - Not accessible via JavaScript
    * @param {string} [options.sameSite='Strict'] - SameSite policy
    * @param {number} [options.defaultMaxAge=2592000] - Default TTL in seconds (30 days)
    * @param {boolean} [options.signCookies=true] - Sign cookies with ECDSA
    */
   constructor(identity, options = {}) {
-    /** @private {ObsidianaIdentity} Identity keypair */
+    /** @private {ObsidianaIdentity} */
     this._identity = identity;
 
-    /** @private {boolean} HTTPS only flag */
+    /** @private {boolean} */
     this._secure = options.secure ?? true;
 
-    /** @private {boolean} HttpOnly flag */
+    /** @private {boolean} */
     this._httpOnly = options.httpOnly ?? true;
 
-    /** @private {string} SameSite policy */
+    /** @private {string} */
     this._sameSite = options.sameSite ?? "Strict";
 
-    /** @private {number} Default TTL in seconds */
+    /** @private {number} */
     this._defaultMaxAge = options.defaultMaxAge ?? 30 * 24 * 60 * 60;
 
-    /** @private {boolean} Sign cookies with ECDSA */
+    /** @private {boolean} */
     this._signCookies = options.signCookies ?? true;
 
-    /** @private {CryptoKey|null} AES key derived from identity key */
+    /** @private {CryptoKey|null} */
     this._encryptionKey = null;
   }
 
   /**
-   * Initializes the manager by deriving the encryption key.
+   * Initialises the manager by deriving the AES‑GCM key.
    *
-   * @returns {Promise<this>} Current instance for method chaining
+   * @returns {Promise<this>} This instance for chaining
    */
   async init() {
     if (!this._encryptionKey) {
@@ -80,11 +75,12 @@ class ObsidianaCookieManager {
   }
 
   /**
-   * Derives an AES-256-GCM key from the identity private key.
+   * Derives an AES‑256‑GCM key from the server’s identity private key.
    *
-   * Uses HKDF with a fixed salt for consistency across restarts.
+   * Reads the private JWK from `.obsidiana/server.key` and uses HKDF
+   * with a fixed salt to obtain a deterministic key.
    *
-   * @returns {Promise<CryptoKey>} AES-GCM-256 key
+   * @returns {Promise<CryptoKey>} AES‑GCM key
    * @private
    */
   async _deriveKey() {
@@ -127,14 +123,12 @@ class ObsidianaCookieManager {
   /**
    * Converts a base64 or base64url string to Uint8Array.
    *
-   * @param {string} base64 - Base64 or base64url encoded string
+   * @param {string} base64 - Encoded string
    * @returns {Uint8Array} Decoded bytes
    * @private
    */
   _base64ToUint8Array(base64) {
-    // Convert base64url to standard base64
     let b64 = base64.replace(/-/g, "+").replace(/_/g, "/");
-    // Add padding if needed
     while (b64.length % 4) {
       b64 += "=";
     }
@@ -150,7 +144,7 @@ class ObsidianaCookieManager {
    * Converts a Uint8Array to a base64url string.
    *
    * @param {Uint8Array} uint8 - Bytes to encode
-   * @returns {string} Base64url-encoded string
+   * @returns {string} Base64url string
    * @private
    */
   _uint8ArrayToBase64(uint8) {
@@ -158,7 +152,6 @@ class ObsidianaCookieManager {
     for (let i = 0; i < uint8.length; i++) {
       binary += String.fromCharCode(uint8[i]);
     }
-    // Convert to base64url
     return btoa(binary)
       .replace(/\+/g, "-")
       .replace(/\//g, "_")
@@ -168,8 +161,8 @@ class ObsidianaCookieManager {
   /**
    * Encrypts a value for cookie storage.
    *
-   * @param {any} value - Value to encrypt (will be JSON.stringify'd)
-   * @returns {Promise<string>} Encrypted cookie value (v1:encrypted[:signature])
+   * @param {any} value - Value to encrypt (will be JSON stringified)
+   * @returns {Promise<string>} Encrypted cookie value
    * @private
    */
   async _encryptValue(value) {
@@ -201,8 +194,8 @@ class ObsidianaCookieManager {
   /**
    * Decrypts a cookie value.
    *
-   * @param {string} cookieValue - Encrypted cookie value
-   * @returns {Promise<any>} Decrypted value
+   * @param {string} cookieValue - Encrypted cookie string
+   * @returns {Promise<any>} Decrypted value or null if invalid
    * @private
    */
   async _decryptValue(cookieValue) {
@@ -246,7 +239,7 @@ class ObsidianaCookieManager {
    * Sets an encrypted cookie.
    *
    * @param {object} res - HTTP response object
-   * @param {string} name - Cookie name
+   * @param {string} name - Cookie name (will be prefixed)
    * @param {any} value - Value to encrypt and store
    * @param {object} [options] - Cookie options (maxAge, path, etc.)
    * @returns {Promise<void>}
@@ -274,8 +267,8 @@ class ObsidianaCookieManager {
    * Gets and decrypts a cookie.
    *
    * @param {object} req - HTTP request object
-   * @param {string} name - Cookie name
-   * @returns {Promise<any>} Decrypted value or null if not found
+   * @param {string} name - Cookie name (without prefix)
+   * @returns {Promise<any>} Decrypted value or null
    */
   async get(req, name) {
     const cookieHeader = req.headers.cookie;
@@ -289,7 +282,7 @@ class ObsidianaCookieManager {
   }
 
   /**
-   * Removes a cookie.
+   * Removes a cookie by setting its Max‑Age to 0.
    *
    * @param {object} res - HTTP response object
    * @param {string} name - Cookie name
@@ -302,10 +295,10 @@ class ObsidianaCookieManager {
   }
 
   /**
-   * Parses Cookie header into an object.
+   * Parses the Cookie header into an object.
    *
-   * @param {string} header - Cookie header value
-   * @returns {object} Parsed cookies
+   * @param {string} header - Raw Cookie header value
+   * @returns {object} Map of cookie names to values
    * @private
    */
   _parse(header) {
@@ -318,12 +311,12 @@ class ObsidianaCookieManager {
   }
 
   /**
-   * Serializes cookie options to Set-Cookie header string.
+   * Serialises cookie options into a Set‑Cookie header string.
    *
    * @param {string} name - Cookie name
    * @param {string} value - Cookie value
    * @param {object} options - Cookie options
-   * @returns {string} Set-Cookie header value
+   * @returns {string} Set‑Cookie header value
    * @private
    */
   _serialize(name, value, options) {
@@ -338,8 +331,4 @@ class ObsidianaCookieManager {
   }
 }
 
-/**
- * @exports
- * @property {Class} ObsidianaCookieManager - Encrypted cookie manager
- */
 module.exports = { ObsidianaCookieManager };
