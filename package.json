@@ -1,6 +1,6 @@
 {
   "name": "@obsidianasecmx/obsidiana-server",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Node.js server with end‑to‑end encryption for HTTP and WebSocket using the Obsidiana protocol (ECDH + AES‑GCM‑256 + PoW). Automatic handshake, session management, and transparent request/response encryption.",
   "main": "index.js",
   "files": [
