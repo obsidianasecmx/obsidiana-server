@@ -1,14 +1,15 @@
 "use strict";
 
 /**
- * Persistent ECDSA P‑256 identity keypair for the server.
+ * Obsidiana Identity — Persistent ECDSA P-256 identity keypair for the server.
  *
- * Generated once on first boot and stored in `.obsidiana/`:
- * - `server.key` – private key in JWK format
- * - `server.pub` – public key as base64 raw P‑256 uncompressed point
+ * This identity keypair is generated once on first server boot and persists
+ * across restarts. It is used to sign Proof-of-Work challenges, allowing
+ * clients to verify the server's authenticity before investing CPU cycles.
  *
- * Used to sign Proof‑of‑Work challenges, allowing clients to verify
- * the server’s authenticity. Completely separate from ephemeral session keys.
+ * Keys are stored in `.obsidiana/` directory:
+ * - `server.key` — private key in JWK format (JSON)
+ * - `server.pub` — public key as base64-encoded raw P-256 uncompressed point
  *
  * @module identity
  * @private
@@ -26,27 +27,34 @@ const PRIV_KEY_FILE = path.join(IDENTITY_DIR, "server.key");
 const PUB_KEY_FILE = path.join(IDENTITY_DIR, "server.pub");
 
 /**
- * Server identity keypair manager.
+ * Persistent ECDSA P-256 identity keypair for the server.
  *
  * @example
  * const identity = new ObsidianaIdentity();
  * await identity.init();
  * const signature = await identity.sign(challengeBlob);
- * const pubKey = identity.publicKey;
+ * const publicKey = identity.publicKey;
  */
 class ObsidianaIdentity {
   constructor() {
-    /** @private {ObsidianaECDSA|null} */
+    /**
+     * The loaded ECDSA signer instance.
+     * @private
+     * @type {ObsidianaECDSA | null}
+     */
     this._signer = null;
 
-    /** @type {string|null} Base64 raw public key */
+    /**
+     * Base64-encoded raw P-256 uncompressed public key.
+     * @type {string | null}
+     */
     this.publicKey = null;
   }
 
   /**
-   * Loads the identity from disk, or generates a new one.
+   * Loads the identity keypair from disk, or generates and persists a new one.
    *
-   * @returns {Promise<this>} This instance for chaining
+   * @returns {Promise<this>} Current instance for method chaining
    */
   async init() {
     if (fs.existsSync(PRIV_KEY_FILE) && fs.existsSync(PUB_KEY_FILE)) {
@@ -58,10 +66,10 @@ class ObsidianaIdentity {
   }
 
   /**
-   * Signs data using the identity private key.
+   * Signs raw data with the identity private key.
    *
    * @param {Buffer | Uint8Array} data - Data to sign
-   * @returns {Promise<string>} Base64 signature
+   * @returns {Promise<string>} Base64-encoded signature
    * @throws {Error} If `init()` has not been called
    */
   async sign(data) {
@@ -70,7 +78,7 @@ class ObsidianaIdentity {
   }
 
   /**
-   * Generates a new keypair and persists it to disk.
+   * Generates a new identity keypair and persists it to disk.
    *
    * @private
    */
@@ -98,7 +106,7 @@ class ObsidianaIdentity {
   }
 
   /**
-   * Loads the keypair from disk.
+   * Loads identity keypair from disk.
    *
    * @private
    */
@@ -129,10 +137,10 @@ class ObsidianaIdentity {
   }
 
   /**
-   * Throws if the keypair has not been initialised.
+   * Asserts that the keypair has been loaded.
    *
    * @private
-   * @throws {Error}
+   * @throws {Error} If `init()` has not been called
    */
   _assertLoaded() {
     if (!this._signer) {

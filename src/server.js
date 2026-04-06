@@ -1,12 +1,11 @@
 "use strict";
 
 /**
- * Core HTTP/WebSocket server class.
+ * Obsidiana Server — Core HTTP/WebSocket server class.
  *
- * Handles routing, middleware, WebSocket upgrades, session management,
- * Proof‑of‑Work challenges, and transparent encryption.
- *
- * Routes are encrypted by default unless registered under `app.public`.
+ * Handles all server functionality: HTTP routing, middleware,
+ * WebSocket upgrades, session management, Proof-of-Work challenges,
+ * and transparent encryption via obsidiana-protocol.
  *
  * @module obsidiana-server/src/server
  * @private
@@ -27,20 +26,37 @@ const { ObsidianaIdentity } = require("./identity");
 const { registerProtocol, HTTP_HANDSHAKE_PATH } = require("./protocol");
 const { securityHeaders, rateLimit } = require("./builtins");
 
+/**
+ * Default maximum body size for incoming requests (512 KB).
+ * @private
+ * @constant {number}
+ */
 const DEFAULT_MAX_BODY = 512 * 1024;
+
+/**
+ * Path to obsidiana-client build script — sibling directory.
+ * @private
+ * @constant {string}
+ */
 const CLIENT_BUILD_PATH =
   require.resolve("@obsidianasecmx/obsidiana-client/build.js");
 
 /**
- * Obsidiana server.
+ * Main Obsidiana server class.
  */
 class Server {
   /**
+   * Creates a new Obsidiana server instance.
+   *
    * @param {object} [options] - Server configuration
-   * @param {number} [options.maxBodySize=524288]
-   * @param {object} [options.pow] - PoW options
-   * @param {object} [options.auth] - Authentication options
-   * @param {object} [options.rateLimit] - Rate limiting options
+   * @param {number} [options.maxBodySize=524288] - Maximum request body size in bytes
+   * @param {object} [options.pow] - Proof-of-Work configuration (see ObsidianaPOW)
+   * @param {object} [options.auth] - Authentication configuration
+   * @param {object} [options.auth.cookies] - Cookie manager options
+   * @param {object} [options.auth.tokens] - Token manager options
+   * @param {object} [options.rateLimit] - Rate limiting configuration
+   * @param {number} [options.rateLimit.windowMs=60000] - Time window in milliseconds
+   * @param {number} [options.rateLimit.max=100] - Maximum requests per window
    */
   constructor(options = {}) {
     /** @private {MiddlewarePipeline} */
@@ -82,7 +98,6 @@ class Server {
     /** @private {object} */
     this._rateLimitOptions = options.rateLimit || {};
 
-    // Register encrypted route methods
     for (const verb of [
       "get",
       "post",
@@ -98,7 +113,6 @@ class Server {
       };
     }
 
-    // Register public (unencrypted) route methods
     this.public = {};
     for (const verb of [
       "get",
@@ -117,10 +131,10 @@ class Server {
   }
 
   /**
-   * Adds middleware to the pipeline.
+   * Adds middleware to the request pipeline.
    *
    * @param {...Function} fns - Middleware functions
-   * @returns {this}
+   * @returns {this} Current instance for method chaining
    */
   use(...fns) {
     this._pipeline.use(...fns);
@@ -128,12 +142,12 @@ class Server {
   }
 
   /**
-   * Registers a route for a specific HTTP method.
+   * Registers a route handler for a specific HTTP method.
    *
-   * @param {string} method - HTTP method
-   * @param {string} path - Route path
-   * @param {Function} handler - Handler function
-   * @returns {this}
+   * @param {string} method - HTTP method (GET, POST, etc.)
+   * @param {string} path - Route path (supports parameters like /users/:id)
+   * @param {Function} handler - Request handler function
+   * @returns {this} Current instance for method chaining
    */
   on(method, path, handler) {
     this._router.on(method, path, handler, false);
@@ -141,11 +155,11 @@ class Server {
   }
 
   /**
-   * Registers a WebSocket route.
+   * Registers a WebSocket route handler.
    *
-   * @param {string} path - WebSocket endpoint
-   * @param {Function} handler - (socket, req) => void
-   * @returns {this}
+   * @param {string} path - WebSocket endpoint path
+   * @param {Function} handler - Handler function receiving (socket, req)
+   * @returns {this} Current instance for method chaining
    */
   ws(path, handler) {
     this._ws.register(path, handler);
@@ -153,13 +167,13 @@ class Server {
   }
 
   /**
-   * Starts the server.
+   * Starts the HTTP/WebSocket server.
    *
    * @param {number} [port=3000] - Listening port
    * @param {object|string} [options] - Options object or host string
    * @param {boolean} [options.ws=false] - Enable WebSocket support
-   * @param {string} [options.host="0.0.0.0"] - Hostname
-   * @returns {Promise<{port: number, host: string, ws: boolean}>}
+   * @param {string} [options.host="0.0.0.0"] - Hostname to bind
+   * @returns {Promise<{port: number, host: string, ws: boolean}>} Server info
    */
   async listen(port = 3000, options = {}) {
     if (typeof options === "string") options = { host: options };
@@ -184,7 +198,7 @@ class Server {
   }
 
   /**
-   * Closes the server.
+   * Closes the server gracefully.
    *
    * @returns {Promise<void>}
    */
@@ -196,12 +210,12 @@ class Server {
   }
 
   /**
-   * Ensures all asynchronous initialisation is done.
+   * Ensures all asynchronous initialization is complete.
    *
    * @private
    * @returns {Promise<void>}
    */
-  async _ensureInit() {
+  _ensureInit() {
     if (!this._initPromise) {
       this._initPromise = (async () => {
         await this._identity.init();
@@ -246,7 +260,7 @@ class Server {
   }
 
   /**
-   * Builds the obsidiana‑client bundle with the server’s public key.
+   * Builds obsidiana-client bundles with the server's identity public key.
    *
    * @private
    */
@@ -284,8 +298,8 @@ class Server {
    * Handles an incoming HTTP request.
    *
    * @private
-   * @param {http.IncomingMessage} rawReq
-   * @param {http.ServerResponse} rawRes
+   * @param {http.IncomingMessage} rawReq - Raw Node.js request
+   * @param {http.ServerResponse} rawRes - Raw Node.js response
    */
   async _handle(rawReq, rawRes) {
     const baseUrl = `http://${rawReq.headers.host ?? "localhost"}`;
@@ -322,7 +336,13 @@ class Server {
         const pathExists = this._router._routes.some((route) =>
           route.regex.test(req.pathname),
         );
-        res.send(pathExists ? 405 : 404);
+
+        if (pathExists) {
+          res.send(405);
+        } else {
+          res.send(404);
+        }
+
         return;
       }
 
@@ -349,4 +369,8 @@ class Server {
   }
 }
 
+/**
+ * @exports
+ * @property {Class} Server - Main server class
+ */
 module.exports = { Server };

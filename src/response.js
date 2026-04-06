@@ -1,14 +1,12 @@
 "use strict";
 
 /**
- * Response wrapper – extends Node.js ServerResponse with helpers.
+ * Obsidiana Response Wrapper — Extends Node.js ServerResponse with helpers.
  *
- * Adds methods:
- * - `res.send(status, body, headers)` – auto‑detects content type
- * - `res.html(status, html, headers)` – sends HTML
- * - `res.json(status, data, headers)` – sends JSON (alias for send)
- *
- * Injects Obsidiana‑specific headers (`X-Powered-By`, `X-Obsidiana-Protocol`).
+ * Adds convenience methods to the raw Node.js response object:
+ * - `res.send(status, body, headers)` — auto-detects content type
+ * - `res.html(status, html, headers)` — sends HTML response
+ * - `res.json(status, data, headers)` — sends JSON response (alias for send)
  *
  * @module response
  * @private
@@ -16,19 +14,29 @@
 
 const { STATUS_CODES } = require("http");
 
-/** @private */
+/**
+ * Default headers added to every response.
+ * @private
+ */
 const OBSIDIAN_HEADERS = {
   "X-Powered-By": "obsidiana-server",
   "X-Obsidiana-Protocol": "obsidiana-v1",
 };
 
 /**
- * Wraps a raw Node.js response, augmenting it with helper methods.
+ * Wraps Node's ServerResponse with send/html/json helpers.
  *
- * @param {import("http").ServerResponse} res - Raw response
+ * @param {import("http").ServerResponse} res - Raw Node.js response object
  * @returns {import("http").ServerResponse} The same response object with added methods
  */
 function wrapResponse(res) {
+  /**
+   * Sends a response with automatic content type detection.
+   *
+   * @param {number} status - HTTP status code
+   * @param {string | Uint8Array | object} body - Response body
+   * @param {Record<string, string>} [headers] - Additional headers to merge
+   */
   res.send = (status, body, headers = {}) => {
     if (res.writableEnded) return;
 
@@ -56,6 +64,13 @@ function wrapResponse(res) {
     res.end(payload);
   };
 
+  /**
+   * Sends an HTML response.
+   *
+   * @param {number} status - HTTP status code
+   * @param {string} html - HTML string to send
+   * @param {Record<string, string>} [headers] - Additional headers to merge
+   */
   res.html = (status, html, headers = {}) => {
     if (res.writableEnded) return;
     const payload = String(html);
@@ -68,6 +83,13 @@ function wrapResponse(res) {
     res.end(payload);
   };
 
+  /**
+   * Sends a JSON response.
+   *
+   * @param {number} status - HTTP status code
+   * @param {object} data - JSON-serializable data
+   * @param {Record<string, string>} [headers] - Additional headers to merge
+   */
   res.json = (status, data, headers = {}) => res.send(status, data, headers);
 
   return res;

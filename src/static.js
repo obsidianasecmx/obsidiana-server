@@ -1,17 +1,11 @@
 "use strict";
 
 /**
- * Static file server middleware.
+ * Obsidiana Static File Server — Middleware for serving static files.
  *
- * Serves files from a given root directory with:
- * - MIME type detection
- * - SPA fallback (serves index.html on 404)
- * - Path traversal protection
- * - ETag and Last‑Modified support (304 responses)
- * - Range requests (partial content)
- * - Cache‑Control headers (1 hour default)
- *
- * The middleware checks the router first: if a route matches, it is skipped.
+ * Provides static file serving with MIME type detection, SPA fallback,
+ * path traversal protection, directory index, Cache-Control headers,
+ * ETag support, and range requests.
  *
  * @module static
  * @public
@@ -21,7 +15,10 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 
-/** @private */
+/**
+ * MIME type mapping for common file extensions.
+ * @private
+ */
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
   ".htm": "text/html; charset=utf-8",
@@ -49,8 +46,13 @@ const MIME_TYPES = {
   ".wav": "audio/wav",
 };
 
+/** Default MIME type for unknown extensions. @private */
 const DEFAULT_MIME = "application/octet-stream";
+
+/** Default cache TTL (1 hour). @private */
 const DEFAULT_CACHE_MAX_AGE = 3600;
+
+/** Paths that should never serve static files (security) */
 const FORBIDDEN_PATHS = [
   ".env",
   ".git",
@@ -63,16 +65,16 @@ const FORBIDDEN_PATHS = [
 ];
 
 /**
- * Creates static file serving middleware.
+ * Creates a static file serving middleware.
  *
- * @param {string} root - Static files root directory
- * @param {object} [options] - Options
- * @param {boolean} [options.spa=false] - Serve index.html on 404 (SPA mode)
- * @param {string} [options.index="index.html"] - Index file name
+ * @param {string} root - Absolute or relative path to the static directory
+ * @param {object} [options] - Configuration options
+ * @param {boolean} [options.spa=false] - Serve index.html for unmatched routes (SPA fallback)
+ * @param {string} [options.index="index.html"] - Default index file name for directories
  * @param {number} [options.maxAge=3600] - Cache max age in seconds
  * @param {boolean} [options.etag=true] - Enable ETag generation
- * @param {boolean} [options.lastModified=true] - Enable Last‑Modified header
- * @returns {Function} Express‑style middleware
+ * @param {boolean} [options.lastModified=true] - Enable Last-Modified header
+ * @returns {Function} Express-style middleware (req, res, next) => void
  */
 function serveStatic(root, options = {}) {
   const {
@@ -122,8 +124,16 @@ function serveStatic(root, options = {}) {
 }
 
 /**
- * Attempts to serve a file, handling directories and SPA fallback.
+ * Attempts to serve a file, with directory index and SPA fallback support.
  *
+ * @param {string} filePath - Absolute path to the requested file
+ * @param {string} index - Index file name (e.g., "index.html")
+ * @param {boolean} spa - Whether to fall back to index.html on 404
+ * @param {string} absRoot - Absolute static root directory
+ * @param {object} res - HTTP response object
+ * @param {object} req - HTTP request object
+ * @param {Function} next - Next middleware function
+ * @param {object} options - Serve options
  * @private
  */
 function tryServe(filePath, index, spa, absRoot, res, req, next, options) {
@@ -154,10 +164,10 @@ function tryServe(filePath, index, spa, absRoot, res, req, next, options) {
 }
 
 /**
- * Generates an ETag for a file.
+ * Generates an ETag for a file based on inode, size, and mtime.
  *
- * @param {fs.Stats} stat
- * @returns {string}
+ * @param {fs.Stats} stat - File statistics
+ * @returns {string} ETag value
  * @private
  */
 function generateETag(stat) {
@@ -167,12 +177,12 @@ function generateETag(stat) {
 }
 
 /**
- * Checks if the client has a cached version (304).
+ * Checks if the client has a valid cached version.
  *
- * @param {object} req
- * @param {fs.Stats} stat
- * @param {string} etag
- * @returns {boolean}
+ * @param {object} req - HTTP request
+ * @param {fs.Stats} stat - File statistics
+ * @param {string} etag - File ETag
+ * @returns {boolean} True if client has the latest version
  * @private
  */
 function isNotModified(req, stat, etag) {
@@ -196,8 +206,13 @@ function isNotModified(req, stat, etag) {
 }
 
 /**
- * Streams a file to the response.
+ * Streams a file to the response with appropriate headers.
  *
+ * @param {string} filePath - Absolute path to the file
+ * @param {object} res - HTTP response object
+ * @param {object} req - HTTP request object
+ * @param {Function} next - Next middleware function
+ * @param {object} options - Serve options
  * @private
  */
 function sendFile(filePath, res, req, next, options) {
@@ -235,8 +250,14 @@ function sendFile(filePath, res, req, next, options) {
       "Referrer-Policy": "strict-origin-when-cross-origin",
     };
 
-    if (fileETag) headers["ETag"] = fileETag;
-    if (lastModified) headers["Last-Modified"] = stat.mtime.toUTCString();
+    if (fileETag) {
+      headers["ETag"] = fileETag;
+    }
+
+    if (lastModified) {
+      headers["Last-Modified"] = stat.mtime.toUTCString();
+    }
+
     headers["Accept-Ranges"] = "bytes";
 
     const rangeHeader = req.headers.range;
@@ -276,11 +297,11 @@ function sendFile(filePath, res, req, next, options) {
 }
 
 /**
- * Parses a Range header.
+ * Parses Range header for partial content requests.
  *
- * @param {string} rangeHeader - e.g. "bytes=0-1023"
- * @param {number} fileSize
- * @returns {object|null} { start, end } or null
+ * @param {string} rangeHeader - Range header value (e.g., "bytes=0-1023")
+ * @param {number} fileSize - Total file size in bytes
+ * @returns {{ start: number, end: number } | null} Parsed range or null if invalid
  * @private
  */
 function parseRange(rangeHeader, fileSize) {

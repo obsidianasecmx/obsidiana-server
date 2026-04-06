@@ -1,23 +1,17 @@
 "use strict";
 
 /**
- * Built‑in middleware for common server tasks.
+ * Obsidiana Built-in Middleware — Common middleware utilities.
  *
- * Provides ready‑to‑use middleware factories:
- * - CORS: Cross‑Origin Resource Sharing headers
- * - Logger: Request logging with timing
- * - securityHeaders: Security headers (XSS, CSP, HSTS, etc.)
- * - rateLimit: In‑memory rate limiting per IP + endpoint
+ * Provides ready-to-use middleware functions for CORS, request logging,
+ * security headers, and rate limiting.
  *
  * @module builtins
  * @public
  */
 
 /**
- * Creates CORS middleware.
- *
- * Adds `Access-Control-Allow-Origin`, `Allow-Methods` and `Allow-Headers`
- * headers. Handles OPTIONS preflight requests by returning 204.
+ * Creates CORS middleware that adds appropriate headers to responses.
  *
  * @param {object} [options] - CORS configuration
  * @param {string} [options.origin="*"] - Allowed origin
@@ -48,10 +42,6 @@ function cors(options = {}) {
 /**
  * Creates request logging middleware.
  *
- * Logs each request to stdout in the format:
- * `METHOD pathname statusCode durationMs`
- * The log is emitted when the response finishes.
- *
  * @returns {Function} Express-style middleware (req, res, next) => void
  */
 function logger() {
@@ -72,10 +62,7 @@ function logger() {
 /**
  * Creates security headers middleware.
  *
- * Adds headers to protect against XSS, clickjacking, MIME sniffing,
- * and enables HSTS + a strict CSP by default.
- *
- * @param {object} [options] - Configuration
+ * @param {object} [options] - Configuration options
  * @param {boolean} [options.hsts=true] - Enable HSTS header
  * @param {number} [options.hstsMaxAge=31536000] - HSTS max age in seconds
  * @param {boolean} [options.csp=true] - Enable CSP header
@@ -118,13 +105,10 @@ function securityHeaders(options = {}) {
 /**
  * Creates rate limiting middleware.
  *
- * Uses an in‑memory store with a sliding window per IP + method + path.
- * Expired entries are cleaned every minute.
- *
- * @param {object} [options] - Configuration
+ * @param {object} [options] - Configuration options
  * @param {number} [options.windowMs=60000] - Time window in milliseconds
  * @param {number} [options.max=100] - Maximum requests per window
- * @param {string} [options.message="Too many requests"] - Error message (status 429)
+ * @param {string} [options.message="Too many requests"] - Error message
  * @returns {Function} Express-style middleware (req, res, next) => void
  */
 function rateLimit(options = {}) {
@@ -151,7 +135,10 @@ function rateLimit(options = {}) {
     let record = store.get(key);
 
     if (!record || now > record.resetTime) {
-      record = { count: 1, resetTime: now + windowMs };
+      record = {
+        count: 1,
+        resetTime: now + windowMs,
+      };
       store.set(key, record);
       return next();
     }

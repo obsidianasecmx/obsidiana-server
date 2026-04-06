@@ -1,21 +1,15 @@
 "use strict";
 
 /**
- * Proof‑of‑Work manager with dynamic difficulty.
+ * Obsidiana Proof of Work — Dynamic difficulty DoS protection.
  *
- * Implements a client‑side SHA‑256 PoW challenge to prevent handshake flooding.
- * Difficulty adjusts based on request rate: higher load → harder challenges.
- *
- * Challenge lifecycle:
- * 1. Server generates random hash + difficulty, stores challenge.
- * 2. Client finds nonce such that SHA‑256(hash + nonce) has `difficulty` leading zero bits.
- * 3. Server verifies solution and marks challenge as used.
+ * Implements a client-side Proof of Work (PoW) challenge system to prevent
+ * handshake flooding attacks. Difficulty adjusts dynamically based on request rate.
  *
  * @module pow
  * @private
  */
 
-/** @private */
 const POW_DEFAULTS = {
   min: 2,
   max: 8,
@@ -24,36 +18,41 @@ const POW_DEFAULTS = {
 };
 
 /**
- * PoW manager.
- *
- * @example
- * const pow = new ObsidianaPOW();
- * const challenge = pow.generateChallenge();
- * // client solves ...
- * const ok = await pow.verify(challenge.id, nonce);
+ * Proof of Work manager with dynamic difficulty.
  */
 class ObsidianaPOW {
   /**
-   * @param {object} [options] - Configuration
+   * Creates a new PoW manager.
+   *
+   * @param {object} [options] - Configuration options
    * @param {number} [options.min=2] - Minimum difficulty (leading zero bits)
    * @param {number} [options.max=8] - Maximum difficulty under load
-   * @param {number} [options.window=10] - Window (seconds) to measure request rate
+   * @param {number} [options.window=10] - Time window (seconds) to measure request rate
    * @param {number} [options.challengeTTL=30] - Seconds before a challenge expires
    */
   constructor(options = {}) {
     this._cfg = { ...POW_DEFAULTS, ...options };
 
-    /** @private {Map<string, object>} */
+    /**
+     * Active challenges.
+     * @private
+     * @type {Map<string, { hash: string, difficulty: number, createdAt: number, used: boolean, attempts: number }>}
+     */
     this._challenges = new Map();
 
-    /** @private {number[]} */
+    /**
+     * Timestamps of recent challenge requests for rate calculation.
+     * @private
+     * @type {number[]}
+     */
     this._requests = [];
 
-    setInterval(() => this._gc(), 30_000).unref();
+    this._cleanup = setInterval(() => this._gc(), 30_000);
+    this._cleanup.unref();
   }
 
   /**
-   * Generates a new challenge.
+   * Generates a new challenge for the client to solve.
    *
    * @returns {{ id: string, hash: string, difficulty: number, ttl: number }}
    */
@@ -82,11 +81,11 @@ class ObsidianaPOW {
   }
 
   /**
-   * Verifies a client’s PoW solution.
+   * Verifies a client's PoW solution.
    *
-   * @param {string} challengeId - ID of the challenge
-   * @param {string} nonce - Nonce found by the client
-   * @returns {Promise<boolean>} True if valid and unused
+   * @param {string} challengeId - ID of the challenge to verify
+   * @param {string} nonce - Client-provided nonce that satisfies the difficulty
+   * @returns {Promise<boolean>} True if solution is valid and challenge was unused
    */
   async verify(challengeId, nonce) {
     const entry = this._challenges.get(challengeId);
@@ -113,9 +112,9 @@ class ObsidianaPOW {
   }
 
   /**
-   * Computes current difficulty based on request rate.
+   * Calculates current difficulty based on recent request rate.
    *
-   * @returns {number}
+   * @returns {number} Difficulty (leading zero bits)
    * @private
    */
   _currentDifficulty() {
@@ -126,7 +125,7 @@ class ObsidianaPOW {
   }
 
   /**
-   * Removes requests older than the window.
+   * Removes request timestamps older than the configured window.
    * @private
    */
   _pruneRequests() {
@@ -135,7 +134,7 @@ class ObsidianaPOW {
   }
 
   /**
-   * Garbage collector for expired challenges.
+   * Garbage collector — removes expired challenges.
    * @private
    */
   _gc() {
@@ -151,9 +150,8 @@ class ObsidianaPOW {
 
 /**
  * Generates a random hex string.
- *
  * @param {number} bytes - Number of random bytes
- * @returns {string}
+ * @returns {string} Hex string of length `bytes * 2`
  * @private
  */
 function _randomHex(bytes) {
@@ -162,10 +160,9 @@ function _randomHex(bytes) {
 }
 
 /**
- * Computes SHA‑256 of a string and returns hex.
- *
- * @param {string} input
- * @returns {Promise<string>}
+ * Computes SHA-256 hash of a string and returns it as hex.
+ * @param {string} input - Input string
+ * @returns {Promise<string>} Hex digest (64 chars)
  * @private
  */
 async function _sha256Hex(input) {
@@ -179,9 +176,9 @@ async function _sha256Hex(input) {
 /**
  * Checks if a hex digest has at least `difficulty` leading zero bits.
  *
- * @param {string} hex - 64‑character hex digest
+ * @param {string} hex - Hex digest (64 chars)
  * @param {number} difficulty - Required leading zero bits
- * @returns {boolean}
+ * @returns {boolean} True if condition satisfied
  * @private
  */
 function _checkLeadingZeros(hex, difficulty) {
@@ -202,12 +199,14 @@ function _checkLeadingZeros(hex, difficulty) {
 }
 
 /**
- * Packs a challenge into a compact base64 blob.
- *
- * Wire format: id (32 bytes) + difficulty (1) + ttl (2) + hash (64 bytes)
+ * Packs a challenge into a compact base64 string for transmission.
  *
  * @param {object} challenge - Challenge object
- * @returns {string} Base64‑encoded blob
+ * @param {string} challenge.id - 32-byte hex ID
+ * @param {string} challenge.hash - 64-byte hex hash
+ * @param {number} challenge.difficulty - Difficulty value (1 byte)
+ * @param {number} challenge.ttl - Time-to-live in seconds (2 bytes)
+ * @returns {string} Base64-encoded challenge blob
  */
 function packChallenge(challenge) {
   const idBytes = new TextEncoder().encode(challenge.id);
@@ -233,7 +232,7 @@ function packChallenge(challenge) {
 /**
  * Unpacks a base64 challenge blob.
  *
- * @param {string} b64 - Base64 challenge
+ * @param {string} b64 - Base64-encoded challenge blob
  * @returns {{ id: string, hash: string, difficulty: number, ttl: number }}
  * @throws {Error} If unpacking fails
  */
@@ -259,10 +258,17 @@ function unpackChallenge(b64) {
 }
 
 /**
- * Unpacks a client offer blob (PoW solution + ECDH keys).
+ * Unpacks a client offer blob.
  *
- * @param {string} b64 - Base64 offer
- * @returns {object|null} Decoded offer or null on error
+ * @param {string} b64 - Base64-encoded offer blob
+ * @returns {{
+ *   publicKey: string,
+ *   signerPublicKey: string,
+ *   challengeId: string,
+ *   nonce: string,
+ *   clientSig: string,
+ *   serverKeyHash: string
+ * } | null} Decoded offer or null on error
  */
 function unpackOffer(b64) {
   try {
@@ -324,11 +330,11 @@ function unpackOffer(b64) {
 }
 
 /**
- * Retrieves the original challenge blob for a given challenge ID.
+ * Retrieves the original challenge blob for signature verification.
  *
  * @param {ObsidianaPOW} pow - PoW instance
  * @param {string} challengeId - Challenge ID
- * @returns {Promise<string|null>} Base64 challenge blob or null
+ * @returns {Promise<string|null>} Base64 challenge blob or null if not found
  */
 async function getChallengeBlob(pow, challengeId) {
   const entry = pow._challenges.get(challengeId);

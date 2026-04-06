@@ -1,13 +1,11 @@
 "use strict";
 
 /**
- * Crypto middleware for automatic HTTP request/response encryption.
+ * Obsidiana Crypto Middleware — Automatic encryption/decryption for HTTP routes.
  *
- * Intercepts requests and responses, decrypts incoming bodies using the
- * session established during handshake, and encrypts outgoing responses.
- *
- * Supports both standard AES‑GCM and ratchet encryption (forward secrecy).
- * Bypasses public routes and the handshake endpoint.
+ * Intercepts HTTP requests and responses, automatically decrypting incoming
+ * requests and encrypting outgoing responses using the session established
+ * during handshake.
  *
  * @module crypto-middleware
  * @private
@@ -16,10 +14,10 @@
 const { ObsidianaCBOR } = require("@obsidianasecmx/obsidiana-protocol");
 
 /**
- * Factory for the crypto middleware.
+ * Creates the crypto middleware for automatic encryption/decryption.
  *
- * @param {ObsidianaSessionStore} store - Session store for lookups and nonce tracking
- * @param {string[]} bypassPaths - Paths that skip encryption (e.g., handshake endpoint)
+ * @param {ObsidianaSessionStore} store - Session store for lookup and nonce tracking
+ * @param {string[]} bypassPaths - Paths that skip crypto (e.g., handshake endpoint)
  * @param {Router} router - Router to check route publicity
  * @returns {Function} Express-style middleware (req, res, next) => Promise<void>
  */
@@ -30,7 +28,6 @@ function obsidianaCrypto(store, bypassPaths, router) {
     if (!routeExists) return next();
 
     if (routeExists.public) {
-      // For public routes, parse plaintext body
       if (["POST", "PUT", "PATCH", "DELETE"].includes(req.method)) {
         const raw = await req.rawBody();
         if (raw.length) {
@@ -46,14 +43,12 @@ function obsidianaCrypto(store, bypassPaths, router) {
       return next();
     }
 
-    // Bypass handshake endpoint and root
     if (bypassPaths.includes(req.pathname) || req.pathname === "/")
       return next();
 
     if (!["POST", "PUT", "PATCH", "DELETE", "GET"].includes(req.method))
       return next();
 
-    // Enforce 512 KB body limit
     const contentLength = parseInt(req.headers["content-length"] ?? "0", 10);
     if (contentLength > 512 * 1024) {
       res.send(413);
@@ -107,12 +102,11 @@ function obsidianaCrypto(store, bypassPaths, router) {
         } else {
           plain = await cipher.decrypt(envelope, { sessionId });
         }
-      } catch {
+      } catch (e) {
         res.send(401);
         return;
       }
 
-      // Replay protection: nonce must be unused
       if (!store.claimNonce(aad.n)) {
         console.log("[crypto] nonce replay");
         res.send(401);
@@ -135,11 +129,7 @@ function obsidianaCrypto(store, bypassPaths, router) {
 }
 
 /**
- * Resolves a session from an encrypted envelope.
- *
- * Extracts the AAD (additional authenticated data) from the envelope,
- * uses the static hint to look up the session, and returns the cipher
- * and optional ratchet.
+ * Resolves session from an encrypted envelope.
  *
  * @param {object} envelope - Encrypted envelope { d, ct?, hdr? }
  * @param {ObsidianaSessionStore} store - Session store
@@ -171,14 +161,10 @@ async function _resolveFromEnvelope(envelope, store) {
 /**
  * Wraps response methods to automatically encrypt outgoing data.
  *
- * Replaces `res.json()`, `res.text()`, `res.html()` and `res.send()`
- * with encrypted versions. The original `res.send` is preserved as
- * `_originalSend` for raw responses.
- *
  * @param {object} res - HTTP response object
  * @param {ObsidianaAES} cipher - AES cipher for encryption
  * @param {string} sessionId - Current session identifier
- * @param {object|null} ratchet - Ratchet instance (optional)
+ * @param {object|null} ratchet - Ratchet instance for forward secrecy (optional)
  * @param {boolean} useRatchet - Whether to use ratchet encryption
  * @private
  */
@@ -192,13 +178,6 @@ function _wrapResponse(
   const _originalSend = res.send.bind(res);
   let _sent = false;
 
-  /**
-   * Encrypts data and sends the encrypted response.
-   *
-   * @param {number} status - HTTP status code
-   * @param {any} body - Data to encrypt and send
-   * @returns {Promise<void>}
-   */
   function encryptAndSend(status, body) {
     if (_sent) return Promise.resolve();
     _sent = true;

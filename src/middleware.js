@@ -1,40 +1,34 @@
 "use strict";
 
 /**
- * Sequential middleware pipeline.
+ * Obsidiana Middleware Pipeline — Sequential middleware execution.
  *
  * Manages a stack of middleware functions that process requests and responses
  * in order. Each middleware receives `(req, res, next)` and must call `next()`
- * to pass control to the next middleware. Asynchronous middleware can return
- * a Promise or be declared `async`.
+ * to pass control to the next middleware.
  *
  * @module middleware
  * @private
  */
 
 /**
- * Pipeline that executes middleware functions sequentially.
- *
- * @example
- * const pipeline = new MiddlewarePipeline();
- * pipeline.use(async (req, res, next) => {
- *   console.log('before');
- *   await next();
- *   console.log('after');
- * });
- * await pipeline.run(req, res);
+ * Manages a sequential middleware pipeline.
  */
 class MiddlewarePipeline {
   constructor() {
-    /** @private {Function[]} */
+    /**
+     * Internal middleware stack.
+     * @private
+     * @type {Function[]}
+     */
     this._stack = [];
   }
 
   /**
-   * Appends one or more middleware functions.
+   * Registers one or more middleware functions at the end of the stack.
    *
    * @param {...Function} fns - Middleware functions (req, res, next) => void
-   * @returns {this} This pipeline for chaining
+   * @returns {this} Current pipeline instance for chaining
    * @throws {TypeError} If any argument is not a function
    */
   use(...fns) {
@@ -48,12 +42,10 @@ class MiddlewarePipeline {
   }
 
   /**
-   * Prepends one or more middleware functions.
+   * Registers one or more middleware functions at the front of the stack.
    *
-   * The first function will run before the second, etc.
-   *
-   * @param {...Function} fns - Middleware functions
-   * @returns {this} This pipeline for chaining
+   * @param {...Function} fns - Middleware functions (req, res, next) => void
+   * @returns {this} Current pipeline instance for chaining
    * @throws {TypeError} If any argument is not a function
    */
   prepend(...fns) {
@@ -69,10 +61,10 @@ class MiddlewarePipeline {
   }
 
   /**
-   * Executes the middleware stack.
+   * Runs the middleware stack in order against the request and response.
    *
-   * @param {object} req - Request object (mutated)
-   * @param {object} res - Response object (mutated)
+   * @param {object} req - Request object (will be mutated by middleware)
+   * @param {object} res - Response object (will be mutated by middleware)
    * @returns {Promise<void>} Resolves when all middleware have completed
    */
   run(req, res) {

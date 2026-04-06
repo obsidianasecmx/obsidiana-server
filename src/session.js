@@ -1,46 +1,58 @@
 "use strict";
 
 /**
- * In‑memory session store with replay protection.
+ * Obsidiana Session Store — In-memory session management with anti-replay.
  *
- * Stores sessions with a TTL of 2 hours. Lookups are performed via a static
- * HMAC hint (16 hex chars) derived from the session ID; the actual session ID
- * is never transmitted.
- *
- * Nonces are permanently tracked to prevent replay attacks. When the nonce
- * limit (50,000) is reached, the oldest nonce is evicted (FIFO).
+ * Manages encrypted sessions with TTL (2 hours), HMAC hint lookup,
+ * nonce registry for replay protection, and automatic garbage collection.
  *
  * @module session
  * @private
  */
 
-const SESSION_TTL_MS = 1000 * 60 * 60 * 2; // 2 hours
+/** Session time-to-live in milliseconds (2 hours). @private */
+const SESSION_TTL_MS = 1000 * 60 * 60 * 2;
+
+/** Maximum number of nonces stored before eviction (50,000). @private */
 const NONCE_MAX = 50_000;
 
 /**
- * Session store.
+ * In-memory session store with replay protection.
  */
 class ObsidianaSessionStore {
   constructor() {
-    /** @private {Map<string, object>} */
+    /**
+     * Session storage.
+     * @private
+     * @type {Map<string, { cipher: object, createdAt: number, staticHint: string, ratchet: object | null }>}
+     */
     this._sessions = new Map();
 
-    /** @private {Map<string, number>} */
+    /**
+     * Nonce registry for replay protection.
+     * @private
+     * @type {Map<string, number>}
+     */
     this._nonces = new Map();
 
-    /** @private {Map<string, string>} */
+    /**
+     * Reverse lookup: static hint (16 hex chars) → sessionId.
+     * @private
+     * @type {Map<string, string>}
+     */
     this._hints = new Map();
 
-    setInterval(() => this._gc(), 1000 * 60 * 5).unref();
+    this._cleanup = setInterval(() => this._gc(), 1000 * 60 * 5);
+    this._cleanup.unref();
   }
 
   /**
    * Stores a new session.
    *
    * @param {string} sessionId - Unique session identifier (never transmitted)
-   * @param {object} cipher - ObsidianaAES instance
-   * @param {string} staticHint - 16 hex chars derived from sessionId
-   * @param {object} [ratchet=null] - Optional ratchet instance
+   * @param {object} cipher - ObsidianaAES instance for this session
+   * @param {string} staticHint - 16 hex chars derived from sessionId via HMAC
+   * @param {object} [ratchet=null] - Optional ratchet for forward secrecy
    */
   set(sessionId, cipher, staticHint, ratchet = null) {
     this._sessions.set(sessionId, {
@@ -55,8 +67,8 @@ class ObsidianaSessionStore {
   /**
    * Checks and registers a nonce for replay protection.
    *
-   * @param {string} nonce - Nonce from AAD
-   * @returns {boolean} True if the nonce is new and registered
+   * @param {string} nonce - Nonce from AAD (base64 string)
+   * @returns {boolean} `true` if the nonce is new and registered, `false` if it was already used
    */
   claimNonce(nonce) {
     if (this._nonces.has(nonce)) return false;
@@ -68,11 +80,11 @@ class ObsidianaSessionStore {
   }
 
   /**
-   * Looks up a session by its static hint (from AAD).
+   * Finds a session by static hint derived from AAD.
    *
-   * @param {object} aad - Additional Authenticated Data
-   * @param {string} aad.hs - Static HMAC hint
-   * @returns {Promise<object|null>} Session data or null
+   * @param {object} aad - Additional Authenticated Data object
+   * @param {string} aad.hs - Static HMAC hint (16 hex chars)
+   * @returns {Promise<{ sessionId: string, cipher: object, ratchet: object | null } | null>}
    */
   async resolveSession(aad) {
     const sessionId = this._hints.get(aad.hs);
@@ -91,7 +103,8 @@ class ObsidianaSessionStore {
   }
 
   /**
-   * Removes expired sessions.
+   * Garbage collector — removes expired sessions.
+   *
    * @private
    */
   _gc() {
@@ -105,7 +118,8 @@ class ObsidianaSessionStore {
   }
 
   /**
-   * Evicts the oldest nonce (FIFO).
+   * Evicts the oldest nonce to prevent unbounded memory growth.
+   *
    * @private
    */
   _evictOldestNonce() {

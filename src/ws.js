@@ -1,13 +1,11 @@
 "use strict";
 
 /**
- * Secure WebSocket with end‑to‑end encryption.
+ * Obsidiana WebSocket — Secure WebSocket with E2E encryption and handshake.
  *
- * Implements the same handshake as HTTP routes (PoW + ECDH + ECDSA)
- * and then encrypts all messages with AES‑GCM‑256.
- *
- * Supports both text and binary messages. The handshake is performed
- * immediately after the WebSocket upgrade.
+ * Provides WebSocket connections with the same E2E encryption as HTTP routes.
+ * Includes Proof-of-Work challenge, ECDH key exchange, ECDSA server identity
+ * verification, and AES-GCM-256 encryption for all messages.
  *
  * @module ws
  * @private
@@ -29,9 +27,13 @@ const OP_CLOSE = 0x8;
 const OP_PING = 0x9;
 const OP_PONG = 0xa;
 
-const MAX_BUFFER_SIZE = 1024 * 1024; // 1 MB
+/** Maximum buffer size per connection (1 MB). @private */
+const MAX_BUFFER_SIZE = 1024 * 1024;
 
-/** @private */
+/**
+ * Concatenates two Uint8Arrays.
+ * @private
+ */
 function _concatUint8(a, b) {
   const out = new Uint8Array(a.length + b.length);
   out.set(a, 0);
@@ -39,17 +41,26 @@ function _concatUint8(a, b) {
   return out;
 }
 
-/** @private */
+/**
+ * Converts a base64 string to Uint8Array.
+ * @private
+ */
 function _fromBase64(str) {
   return Uint8Array.from(atob(str), (c) => c.charCodeAt(0));
 }
 
-/** @private */
+/**
+ * Converts a Uint8Array to base64 string.
+ * @private
+ */
 function _toBase64(buf) {
   return btoa(String.fromCharCode(...buf));
 }
 
-/** @private */
+/**
+ * Normalizes a chunk (ensures it's a standalone Uint8Array).
+ * @private
+ */
 function _normalize(chunk) {
   return new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength).slice(
     0,
@@ -57,7 +68,7 @@ function _normalize(chunk) {
 }
 
 /**
- * WebSocket manager – handles route registration and upgrade.
+ * Obsidiana WebSocket manager — handles route registration and upgrade requests.
  */
 class ObsidianaWS {
   constructor() {
@@ -72,11 +83,11 @@ class ObsidianaWS {
   }
 
   /**
-   * Initialises the manager with required dependencies.
+   * Initializes the WebSocket manager with required dependencies.
    *
-   * @param {ObsidianaSessionStore} store
-   * @param {ObsidianaPOW} pow
-   * @param {ObsidianaIdentity} identity
+   * @param {ObsidianaSessionStore} store - Session storage
+   * @param {ObsidianaPOW} pow - Proof-of-Work manager
+   * @param {ObsidianaIdentity} identity - Server identity keypair
    */
   init(store, pow, identity) {
     this._store = store;
@@ -85,9 +96,9 @@ class ObsidianaWS {
   }
 
   /**
-   * Registers a WebSocket route.
+   * Registers a WebSocket route handler.
    *
-   * @param {string} path - Endpoint path
+   * @param {string} path - WebSocket endpoint path
    * @param {Function} handler - (socket, req) => void
    */
   register(path, handler) {
@@ -95,11 +106,11 @@ class ObsidianaWS {
   }
 
   /**
-   * Handles an HTTP upgrade request.
+   * Handles an HTTP upgrade request to WebSocket.
    *
-   * @param {import("http").IncomingMessage} req
-   * @param {import("net").Socket} socket
-   * @param {Buffer} head
+   * @param {import("http").IncomingMessage} req - HTTP upgrade request
+   * @param {import("net").Socket} socket - Raw network socket
+   * @param {Buffer} head - First packet of the upgraded stream
    */
   handleUpgrade(req, socket, head) {
     const { pathname } = new URL(req.url, "http://x");
@@ -135,7 +146,7 @@ class ObsidianaWS {
   }
 
   /**
-   * Executes the Obsidiana handshake over the WebSocket.
+   * Executes the Obsidiana cryptographic handshake over the WebSocket.
    *
    * @private
    */
@@ -211,6 +222,7 @@ class ObsidianaWS {
           clearTimeout(timeout);
 
           const staticHint = await ObsidianaECDSA.deriveStaticHint(sessionId);
+
           ratchet = null;
 
           store.set(sessionId, cipher, staticHint, ratchet);
@@ -248,7 +260,6 @@ class ObsidianaWS {
           return;
         }
 
-        // Encrypted message phase
         if (!msg?.d) {
           socket.close(1008, "");
           return;
@@ -287,7 +298,7 @@ class ObsidianaWS {
 }
 
 /**
- * WebSocket wrapper handling raw frames and encryption.
+ * Obsidiana WebSocket wrapper — handles raw WebSocket frames and encryption.
  */
 class ObsidianaSocket {
   constructor(socket) {
@@ -310,8 +321,8 @@ class ObsidianaSocket {
   /**
    * Registers an event handler.
    *
-   * @param {string} event - "message", "obsidiana:message", "close", "error"
-   * @param {Function} fn
+   * @param {string} event - Event name
+   * @param {Function} fn - Event handler
    * @returns {this}
    */
   on(event, fn) {
@@ -321,9 +332,9 @@ class ObsidianaSocket {
   }
 
   /**
-   * Sends raw data (used internally for handshake).
+   * Sends raw data over the WebSocket (no encryption).
    *
-   * @param {Uint8Array|object|string} data
+   * @param {Uint8Array|object|string} data - Data to send
    * @private
    */
   _rawSend(data) {
@@ -347,19 +358,19 @@ class ObsidianaSocket {
   }
 
   /**
-   * Sends an encrypted message (replaced after handshake).
+   * Sends an encrypted message over the WebSocket.
    *
-   * @param {any} data
+   * @param {any} data - Data to encrypt and send
    */
   send(data) {
     return this._rawSend(data);
   }
 
   /**
-   * Closes the connection.
+   * Closes the WebSocket connection.
    *
-   * @param {number} [code=1000]
-   * @param {string} [reason=""]
+   * @param {number} [code=1000] - Close code
+   * @param {string} [reason=""] - Close reason
    */
   close(code = 1000, reason = "") {
     if (this._closed) return;
@@ -373,10 +384,7 @@ class ObsidianaSocket {
   }
 
   /**
-   * Emits an event.
-   *
-   * @param {string} event
-   * @param {...any} args
+   * Emits an event to all registered handlers.
    * @private
    */
   _emit(event, ...args) {
@@ -384,14 +392,20 @@ class ObsidianaSocket {
     for (const fn of fns) fn(...args);
   }
 
-  /** @private */
+  /**
+   * Emits close event.
+   * @private
+   */
   _emitClose() {
     if (this._closed) return;
     this._closed = true;
     this._emit("close");
   }
 
-  /** @private */
+  /**
+   * Handles incoming raw data, reassembles frames.
+   * @private
+   */
   _onData(chunk) {
     this._buffer = _concatUint8(this._buffer, _normalize(chunk));
 
@@ -408,7 +422,10 @@ class ObsidianaSocket {
     }
   }
 
-  /** @private */
+  /**
+   * Handles a decoded WebSocket frame.
+   * @private
+   */
   _handleFrame(frame) {
     switch (frame.opcode) {
       case OP_TEXT:
@@ -432,9 +449,9 @@ class ObsidianaSocket {
 /**
  * Encodes a WebSocket frame.
  *
- * @param {number} opcode
- * @param {Uint8Array} payload
- * @returns {Uint8Array}
+ * @param {number} opcode - Frame opcode (text, binary, close, etc.)
+ * @param {Uint8Array} payload - Frame payload
+ * @returns {Uint8Array} Encoded frame
  * @private
  */
 function encodeFrame(opcode, payload) {
@@ -463,8 +480,8 @@ function encodeFrame(opcode, payload) {
 /**
  * Decodes a WebSocket frame from a buffer.
  *
- * @param {Uint8Array} buf
- * @returns {object|null} { opcode, payload, consumed }
+ * @param {Uint8Array} buf - Buffer containing at least one frame
+ * @returns {object|null} Decoded frame with opcode, payload, and consumed bytes
  * @private
  */
 function decodeFrame(buf) {

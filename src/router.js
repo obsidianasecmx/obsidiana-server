@@ -1,11 +1,10 @@
 "use strict";
 
 /**
- * HTTP router with parameter extraction.
+ * Obsidiana Router — HTTP route matching and parameter extraction.
  *
- * Supports path parameters (`:param`) and a trailing wildcard (`*`).
- * Routes are matched against registered HTTP methods and paths.
- * Named parameters are extracted into `req.params`.
+ * A lightweight router that supports path parameters (`:param`) and a
+ * trailing wildcard (`*`).
  *
  * @module router
  * @private
@@ -14,14 +13,16 @@
 const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
 
 /**
- * Compiles a route path into a RegExp and a list of parameter names.
+ * Compiles a route path string into a regular expression and a list of
+ * parameter names.
  *
- * @param {string} path - Route path (e.g., `/users/:id` or `/files/*`)
- * @returns {{ regex: RegExp, paramNames: string[] }}
+ * @param {string} path - Route path with optional parameters
+ * @returns {{ regex: RegExp, paramNames: string[] }} Compiled regex and param names
  * @private
  */
 function compilePath(path) {
   const paramNames = [];
+
   const WILDCARD = "\x00OBSIDIAN\x00";
 
   const pattern = path
@@ -40,22 +41,32 @@ function compilePath(path) {
 }
 
 /**
- * Router class.
+ * HTTP router with parameter extraction and method-based routing.
  */
 class Router {
   constructor() {
-    /** @private {Array<object>} */
+    /**
+     * Internal route registry.
+     * @private
+     * @type {Array<{
+     *   method: string,
+     *   regex: RegExp,
+     *   paramNames: string[],
+     *   handler: Function,
+     *   public: boolean
+     * }>}
+     */
     this._routes = [];
   }
 
   /**
-   * Registers a route.
+   * Registers a route for the given HTTP method and path.
    *
-   * @param {string} method - HTTP method (case‑insensitive)
-   * @param {string} path - Route path
-   * @param {Function} handler - Async (req, res) => void
+   * @param {string} method - HTTP verb (case-insensitive, stored uppercase)
+   * @param {string} path - Route path, may contain `:param` or `*`
+   * @param {Function} handler - Async function (req, res) => void
    * @param {boolean} [isPublic=false] - Whether the route is public (no encryption)
-   * @returns {this}
+   * @returns {this} Current router instance for chaining
    */
   on(method, path, handler, isPublic = false) {
     const { regex, paramNames } = compilePath(path);
@@ -70,11 +81,15 @@ class Router {
   }
 
   /**
-   * Matches a request against registered routes.
+   * Attempts to match a request against registered routes.
    *
-   * @param {string} method - HTTP method
-   * @param {string} pathname - Request path
-   * @returns {object|null} Matched route data or null
+   * @param {string} method - HTTP verb (GET, POST, etc.)
+   * @param {string} pathname - Request path (e.g., `/users/42`)
+   * @returns {{
+   *   handler: Function,
+   *   params: Record<string, string>,
+   *   public: boolean
+   * } | null} Matched route data or null if no match
    */
   match(method, pathname) {
     for (const route of this._routes) {
@@ -98,7 +113,6 @@ class Router {
   }
 }
 
-// Convenience methods: router.get(), router.post(), etc.
 METHODS.forEach((verb) => {
   Router.prototype[verb.toLowerCase()] = function (path, handler) {
     return this.on(verb, path, handler, false);

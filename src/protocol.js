@@ -1,12 +1,10 @@
 "use strict";
 
 /**
- * Handshake protocol registration (HTTP endpoints `/q`).
+ * Obsidiana Protocol Registration — HTTP handshake endpoints.
  *
- * Implements the full Obsidiana cryptographic handshake over HTTP:
- * - GET /q: returns a PoW challenge signed by the server identity.
- * - POST /q: accepts client’s PoW solution, ECDH public key, and signatures,
- *            completes ECDH, derives session key, and stores the session.
+ * Registers the handshake routes (`GET /q` and `POST /q`) that implement the
+ * full Obsidiana cryptographic handshake over HTTP.
  *
  * @module protocol
  * @private
@@ -21,14 +19,14 @@ const { packChallenge, unpackOffer, getChallengeBlob } = require("./pow");
 
 let DoubleRatchet = null;
 
-/** @public */
+/** HTTP path for handshake endpoints. @public */
 const HTTP_HANDSHAKE_PATH = "/q";
 
 /**
- * SHA‑256 hash of a string, returns hex.
+ * Computes SHA-256 hash of a string and returns hex digest.
  *
- * @param {string} str
- * @returns {Promise<string>}
+ * @param {string} str - Input string
+ * @returns {Promise<string>} Hex digest (64 chars)
  * @private
  */
 async function sha256(str) {
@@ -41,17 +39,18 @@ async function sha256(str) {
 }
 
 /**
- * Registers handshake routes on the server.
+ * Registers the handshake routes on the Obsidiana server.
  *
  * @param {object} server - Obsidiana server instance
- * @param {ObsidianaSessionStore} store - Session store
- * @param {ObsidianaPOW} pow - PoW manager
- * @param {ObsidianaIdentity} identity - Server identity keypair
+ * @param {ObsidianaSessionStore} store - Session storage
+ * @param {ObsidianaPOW} pow - Proof-of-Work manager
+ * @param {ObsidianaIdentity} identity - Persistent server identity keypair
  */
 function registerProtocol(server, store, pow, identity) {
   server.on("GET", HTTP_HANDSHAKE_PATH, async (req, res) => {
     const challenge = pow.generateChallenge();
     const blob = packChallenge(challenge);
+
     const blobBytes = new TextEncoder().encode(blob);
     const sig = await identity.sign(blobBytes);
     const wireData = ObsidianaCBOR.encode({ d: blob + "." + sig });
@@ -106,10 +105,13 @@ function registerProtocol(server, store, pow, identity) {
       }
 
       const blobBytes = new TextEncoder().encode(challengeBlob);
+      const pubKeyBytes = signerPublicKey;
+      const sigBytes = clientSig;
+
       const validSig = await ObsidianaECDSA.verify(
-        signerPublicKey,
+        pubKeyBytes,
         blobBytes,
-        clientSig,
+        sigBytes,
       );
 
       if (!validSig) {
@@ -134,9 +136,6 @@ function registerProtocol(server, store, pow, identity) {
       const staticHint = await ObsidianaECDSA.deriveStaticHint(sessionId);
 
       let ratchet = null;
-      if (hs.sharedSecret && DoubleRatchet) {
-        ratchet = await DoubleRatchet.create(hs.sharedSecret, licenseKey, 1);
-      }
 
       store.set(sessionId, hs.cipher, staticHint, ratchet);
 
